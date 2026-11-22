@@ -117,7 +117,8 @@ def storage_chart(fig_dir: Path, storage_rows: list[dict]) -> None:
 def timing_chart(fig_dir: Path, timing_rows: list[dict]) -> None:
     rows = [r for r in timing_rows if r["stage"] != "TOTAL"]
     total = next(r for r in timing_rows if r["stage"] == "TOTAL")
-    labels = {"load": "Load + decode", "work_resize": "Working resize", "denoise": "Denoise",
+    labels = {"load": "Load + decode", "work_resize": "Working resize",
+              "iqa_restore": "Quality check + restoration",
               "mask": "Green mask", "enhance": "CLAHE + sharpen", "final_resize": "Final resize + pad",
               "save": "JPEG encode + write"}
     fig, ax = plt.subplots(figsize=(7.5, 3.6))
@@ -269,8 +270,117 @@ def failure_cases(fig_dir: Path, per_image: list[dict], input_dir: Path) -> None
     plt.close(fig)
 
 
+FILTER_LABELS = {"none": "No change", "median": "Median", "gaussian": "Gaussian", "wiener": "Wiener",
+                 "richardson_lucy": "Richardson-Lucy", "total_variation": "Total variation",
+                 "sharpen": "Sharpening"}
+
+
+def brisque_chart(fig_dir: Path, per_image: list[dict]) -> None:
+    """BRISQUE before and after restoration for the flagged images."""
+    flagged = sorted((r for r in per_image if r["brisque_flagged"]), key=lambda r: -r["brisque_before"])
+    if not flagged:
+        return
+    before = np.array([r["brisque_before"] for r in flagged])
+    after = np.array([r["brisque_after"] for r in flagged])
+    x = np.arange(len(flagged))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4), width_ratios=[1.7, 1])
+    ax = axes[0]
+    ax.vlines(x, after, before, color=GRID, linewidth=1.0, zorder=1)
+    ax.scatter(x, before, s=14, color=BLUE, label="Before restoration", zorder=2)
+    ax.scatter(x, after, s=14, color=ORANGE, label="After the selected filter", zorder=2)
+    ax.axhline(pp.BRISQUE_THRESHOLD, color=MUTED, linewidth=1.0, linestyle="--")
+    ax.text(len(flagged) - 1, pp.BRISQUE_THRESHOLD + 1, f"threshold {pp.BRISQUE_THRESHOLD:.0f}",
+            ha="right", va="bottom", fontsize=8, color=INK_2)
+    ax.set_xlabel("Flagged images, ordered by the score before restoration")
+    ax.set_ylabel("BRISQUE (lower is better)")
+    ax.yaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.tick_params(length=0)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title(f"{len(flagged)} flagged images: mean {before.mean():.1f} to {after.mean():.1f}")
+
+    ax = axes[1]
+    all_before = np.array([r["brisque_before"] for r in per_image])
+    all_after = np.array([r["brisque_after"] for r in per_image])
+    bins = np.linspace(min(all_before.min(), all_after.min(), 0), max(all_before.max(), all_after.max()), 30)
+    ax.hist(all_before, bins=bins, histtype="step", color=BLUE, linewidth=2, label="Before")
+    ax.hist(all_after, bins=bins, histtype="step", color=ORANGE, linewidth=2, label="After")
+    ax.axvline(pp.BRISQUE_THRESHOLD, color=MUTED, linewidth=1.0, linestyle="--")
+    ax.set_xlabel("BRISQUE")
+    ax.set_ylabel("Number of images")
+    ax.yaxis.grid(True)
+    ax.set_axisbelow(True)
+    ax.tick_params(length=0)
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_title(f"All {len(per_image)} images")
+    fig.tight_layout()
+    fig.savefig(fig_dir / "brisque_before_after.png", dpi=DPI)
+    plt.close(fig)
+
+
+def filter_choice_chart(fig_dir: Path, iqa_rows: list[dict]) -> None:
+    rows = [r for r in iqa_rows if r["mean_score_all_flagged"] != ""]
+    if not rows:
+        return
+    labels = [FILTER_LABELS[r["filter"]] for r in rows]
+    y = np.arange(len(rows))[::-1]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.4), sharey=True)
+    bars = axes[0].barh(y, [r["times_selected"] for r in rows], height=0.55, color=BLUE)
+    axes[0].bar_label(bars, fontsize=8, color=INK_2, padding=3)
+    axes[0].set_yticks(y, labels)
+    axes[0].set_xlabel("Number of flagged images")
+    axes[0].set_title("How often each filter gave the best score")
+    bars = axes[1].barh(y, [r["mean_score_all_flagged"] for r in rows], height=0.55, color=BLUE)
+    axes[1].bar_label(bars, fmt="%.1f", fontsize=8, color=INK_2, padding=3)
+    axes[1].set_xlabel("Mean BRISQUE on all flagged images (lower is better)")
+    axes[1].set_title("Mean score of each filter")
+    for ax in axes:
+        ax.xaxis.grid(True)
+        ax.set_axisbelow(True)
+        ax.tick_params(length=0)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "restoration_filter_choice.png", dpi=DPI)
+    plt.close(fig)
+
+
+def restoration_examples(fig_dir: Path, per_image: list[dict], input_dir: Path, count: int = 4) -> None:
+    """Each restoration filter on the flagged images with the largest gain."""
+    flagged = [r for r in per_image if r["brisque_flagged"]]
+    if not flagged:
+        return
+    picks, seen = [], set()
+    for r in sorted(flagged, key=lambda r: r["brisque_after"] - r["brisque_before"]):
+        if r["restore_filter"] not in seen or len(picks) < count:
+            if r["restore_filter"] not in seen:
+                picks.append(r)
+                seen.add(r["restore_filter"])
+        if len(picks) == count:
+            break
+    names = pp.RESTORE_FILTERS
+    fig, axes = plt.subplots(len(picks), len(names), figsize=(2.3 * len(names), 2.5 * len(picks)), squeeze=False)
+    for i, r in enumerate(picks):
+        work = pp.limit_long_side(pp.load_image(input_dir / r["class"] / r["file"]), pp.WORK_SIDE)
+        _, info, cands = pp.iqa_guided_restore(work, keep_candidates=True)
+        h, w = work.shape[:2]
+        side = min(h, w) // 2                       # centre crop, so that detail is visible
+        y0, x0 = (h - side) // 2, (w - side) // 2
+        for j, name in enumerate(names):
+            ax = axes[i][j]
+            show(ax, cands[name][y0:y0 + side, x0:x0 + side])
+            best = name == info.filter
+            ax.set_xlabel(f"BRISQUE {info.scores[name]:.1f}" + ("  (kept)" if best else ""),
+                          fontsize=9, color=INK, fontweight="bold" if best else "normal")
+            if i == 0:
+                ax.set_title("Original" if name == "none" else FILTER_LABELS[name], fontsize=10, loc="center")
+        axes[i][0].set_ylabel(pretty(r["class"]), fontsize=9, color=INK)
+    fig.tight_layout()
+    fig.savefig(fig_dir / "restoration_examples.png", dpi=DPI)
+    plt.close(fig)
+
+
 def make_all(fig_dir: Path, samples: dict, per_image: list[dict], storage_rows: list[dict],
-             timing_rows: list[dict], baseline_summary: list[dict], input_dir: Path) -> None:
+             timing_rows: list[dict], baseline_summary: list[dict], input_dir: Path,
+             iqa_rows: list[dict]) -> None:
     steps_per_class(fig_dir, samples)
     steps_overview(fig_dir, samples)
     storage_chart(fig_dir, storage_rows)
@@ -281,3 +391,6 @@ def make_all(fig_dir: Path, samples: dict, per_image: list[dict], storage_rows: 
     quality_chart(fig_dir, per_image)
     foreground_chart(fig_dir, per_image)
     failure_cases(fig_dir, per_image, input_dir)
+    brisque_chart(fig_dir, per_image)
+    filter_choice_chart(fig_dir, iqa_rows)
+    restoration_examples(fig_dir, per_image, input_dir)

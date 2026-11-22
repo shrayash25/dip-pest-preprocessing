@@ -1,5 +1,5 @@
 variant,images,features,accuracy_mean,accuracy_std,macro_f1_mean,macro_f1_std
 A_resize_only,590,59,0.4503,0.0068,0.4502,0.0063
 C_CLAHE_only,590,59,0.4418,0.0144,0.4434,0.0144
-D_enhanced_no_mask,590,59,0.4486,0.0068,0.4494,0.0076
-E_full_pipeline,590,59,0.4593,0.0121,0.459,0.0127
+D_enhanced_no_mask,590,59,0.4706,0.016,0.4709,0.0159
+E_full_pipeline,590,59,0.4644,0.005,0.4647,0.0054

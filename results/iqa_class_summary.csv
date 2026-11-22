@@ -1,0 +1,8 @@
+class,images,flagged,mean_brisque_before,mean_brisque_after,flagged_mean_before,flagged_mean_after
+black_aphid,100,28,21.16,13.69,38.56,11.86
+green_aphid,90,14,18.84,13.76,45.24,12.59
+mealybug,100,19,17.71,13.77,40.77,20.0
+red_mite,100,16,19.7,17.01,36.79,19.97
+whitefly,100,20,18.89,16.2,37.83,24.41
+yellow_aphid,100,31,20.69,12.32,37.86,10.86
+TOTAL,590,128,19.51,14.47,39.11,15.88

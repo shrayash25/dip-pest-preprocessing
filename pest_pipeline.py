@@ -3,8 +3,11 @@
 Stages for each image:
     1. Load and scale the bit depth to 8-bit, 3-channel BGR.
     2. Reduce to a working resolution (long side <= WORK_SIDE).
-    3. Denoise: median filter, then a Gaussian filter that adapts to the
-       estimated noise level.
+    3. Quality check and restoration: the BRISQUE no-reference quality score
+       is calculated. A good image is not changed. A low-quality image is
+       processed by each candidate filter (median, Gaussian, Wiener,
+       Richardson-Lucy, total variation, sharpening) and the result with the
+       best score is kept.
     4. Mask the green leaf background: HSV green range, then an Otsu
        threshold on the LAB chroma distance from the dominant leaf colour,
        then cleaned by morphology.
@@ -18,6 +21,8 @@ Outputs:
     <results>/storage_summary.csv   raw MB vs processed MB for each class
     <results>/timing_summary.csv    mean time for each stage
     <results>/baseline_comparison.csv
+    <results>/iqa_class_summary.csv BRISQUE before and after for each class
+    <results>/iqa_filter_summary.csv  how often each restoration filter was kept
     <results>/figures/*.png         step plots and charts
     <results>/summary.txt           the numbers printed at the end of the run
 
@@ -44,10 +49,8 @@ TARGET_SIZE = 512          # final image is TARGET_SIZE x TARGET_SIZE
 WORK_SIDE = 1024           # long side used for masking and enhancement
 JPEG_QUALITY = 85
 
-MEDIAN_KSIZE = 3
-NOISE_SIGMA_HIGH = 4.0     # estimated noise above this uses the stronger blur
-GAUSS_SIGMA_LOW = 0.5
-GAUSS_SIGMA_HIGH = 1.0
+MEDIAN_KSIZE = 3           # median filter window (impulse noise)
+GAUSS_SIGMA = 1.0          # Gaussian filter (sensor noise)
 
 MASK_BLUR_SIGMA = 2.0      # smoothing before thresholding, to reduce speckle
 HSV_GREEN_LOW = (35, 30, 40)     # OpenCV scale: H 0-179, S 0-255, V 0-255
@@ -68,7 +71,16 @@ UNSHARP_SIGMA = 1.0
 UNSHARP_AMOUNT = 0.6
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-STAGES = ["load", "work_resize", "denoise", "mask", "enhance", "final_resize", "save"]
+BRISQUE_THRESHOLD = 30.0   # images with a higher score get restoration (Jia et al., 2025)
+PSF_SIGMA = 1.2            # Gaussian point spread function assumed for deblurring
+WIENER_K = 0.02            # noise-to-signal power ratio for the Wiener filter
+RL_ITERATIONS = 10         # Richardson-Lucy iterations
+TV_WEIGHT = 0.10           # total variation denoising weight
+RESTORE_SHARPEN_AMOUNT = 1.0
+MODEL_DIR = Path(__file__).resolve().parent / "models"
+
+STAGES = ["load", "work_resize", "iqa_restore", "mask", "enhance", "final_resize", "save"]
+RESTORE_FILTERS = ["none", "median", "gaussian", "wiener", "richardson_lucy", "total_variation", "sharpen"]
 
 
 # --------------------------------------------------------------------------
@@ -110,13 +122,128 @@ def estimate_noise_sigma(gray: np.ndarray) -> float:
     return float(np.sqrt(np.pi / 2.0) * np.abs(response).sum() / (6.0 * (w - 2) * (h - 2)))
 
 
-def denoise(bgr: np.ndarray) -> tuple[np.ndarray, float]:
-    """Median filter for impulse noise, then a noise-adaptive Gaussian filter."""
-    sigma_n = estimate_noise_sigma(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
-    out = cv2.medianBlur(bgr, MEDIAN_KSIZE)
-    sigma = GAUSS_SIGMA_HIGH if sigma_n > NOISE_SIGMA_HIGH else GAUSS_SIGMA_LOW
-    out = cv2.GaussianBlur(out, (0, 0), sigma)
-    return out, sigma_n
+_brisque_model = None
+
+
+def brisque_score(bgr: np.ndarray) -> float:
+    """BRISQUE no-reference quality score. Lower is better (0 to about 100)."""
+    global _brisque_model
+    if _brisque_model is None:
+        _brisque_model = cv2.quality.QualityBRISQUE_create(
+            str(MODEL_DIR / "brisque_model_live.yml"), str(MODEL_DIR / "brisque_range_live.yml"))
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) if bgr.ndim == 3 else bgr
+    return float(_brisque_model.compute(gray)[0])
+
+
+def gaussian_psf(sigma: float) -> np.ndarray:
+    size = 2 * int(np.ceil(3 * sigma)) + 1
+    k = cv2.getGaussianKernel(size, sigma)
+    return (k @ k.T).astype(np.float64)
+
+
+def wiener_deconvolve(l: np.ndarray, sigma: float = PSF_SIGMA, k: float = WIENER_K) -> np.ndarray:
+    """Wiener filter in the frequency domain: F = conj(H) / (|H|^2 + K) * G.
+
+    `l` is a float image in [0, 1]. K is the noise-to-signal power ratio.
+    """
+    psf = gaussian_psf(sigma)
+    pad = psf.shape[0]
+    g = cv2.copyMakeBorder(l, pad, pad, pad, pad, cv2.BORDER_REFLECT)   # reduces edge ringing
+    h = np.zeros_like(g, dtype=np.float64)
+    ph, pw = psf.shape
+    h[:ph, :pw] = psf
+    h = np.roll(h, (-(ph // 2), -(pw // 2)), axis=(0, 1))               # centre the PSF at (0, 0)
+    H = np.fft.rfft2(h)
+    G = np.fft.rfft2(g)
+    F = np.conj(H) / (np.abs(H) ** 2 + k) * G
+    f = np.fft.irfft2(F, s=g.shape)
+    return np.clip(f[pad:-pad, pad:-pad], 0.0, 1.0).astype(np.float32)
+
+
+def richardson_lucy(l: np.ndarray, sigma: float = PSF_SIGMA, iterations: int = RL_ITERATIONS) -> np.ndarray:
+    """Richardson-Lucy iterative deconvolution with a Gaussian PSF.
+
+    f_(k+1) = f_k * ( h_flipped (*) ( g / (h (*) f_k) ) ). The Gaussian PSF is
+    symmetric, so the flipped PSF is the same as the PSF.
+    """
+    g = l.astype(np.float32)
+    estimate = g.copy()
+    for _ in range(iterations):
+        predicted = cv2.GaussianBlur(estimate, (0, 0), sigma)
+        ratio = g / (predicted + 1e-6)
+        estimate *= cv2.GaussianBlur(ratio, (0, 0), sigma)
+    return np.clip(estimate, 0.0, 1.0)
+
+
+def total_variation(bgr: np.ndarray, weight: float = TV_WEIGHT) -> np.ndarray:
+    """Total variation denoising (Chambolle): smooths noise and keeps edges.
+
+    Noise is in all three colour channels, so this filter uses the full
+    colour image and not only the lightness channel.
+    """
+    from skimage.restoration import denoise_tv_chambolle
+    out = denoise_tv_chambolle(bgr.astype(np.float32) / 255.0, weight=weight, channel_axis=-1)
+    return np.round(np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def sharpen_filter(l: np.ndarray, amount: float = RESTORE_SHARPEN_AMOUNT) -> np.ndarray:
+    """Unsharp masking: adds back the high-frequency part of the image."""
+    blur = cv2.GaussianBlur(l, (0, 0), UNSHARP_SIGMA)
+    return np.clip(l + amount * (l - blur), 0.0, 1.0).astype(np.float32)
+
+
+def restoration_candidates(bgr: np.ndarray) -> dict[str, np.ndarray]:
+    """Apply each restoration filter.
+
+    The smoothing filters (median, Gaussian, total variation) use the colour
+    image. The deblurring filters (Wiener, Richardson-Lucy, sharpening) use
+    the LAB lightness channel, so that they do not make colour fringes.
+    """
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l = lab[:, :, 0].astype(np.float32) / 255.0
+    restored_l = {
+        "wiener": wiener_deconvolve(l),
+        "richardson_lucy": richardson_lucy(l),
+        "sharpen": sharpen_filter(l),
+    }
+    out = {"none": bgr,
+           "median": cv2.medianBlur(bgr, MEDIAN_KSIZE),
+           "gaussian": cv2.GaussianBlur(bgr, (0, 0), GAUSS_SIGMA),
+           "total_variation": total_variation(bgr)}
+    for name, channel in restored_l.items():
+        merged = lab.copy()
+        merged[:, :, 0] = np.round(channel * 255.0).astype(np.uint8)
+        out[name] = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    return out
+
+
+@dataclass
+class RestoreInfo:
+    brisque_before: float
+    brisque_after: float
+    filter: str                    # the filter that was kept
+    flagged: bool                  # True if the score was above BRISQUE_THRESHOLD
+    scores: dict[str, float]       # score of each candidate (flagged images only)
+    noise_sigma: float
+
+
+def iqa_guided_restore(bgr: np.ndarray, keep_candidates: bool = False):
+    """Quality check, then restoration chosen by the quality score.
+
+    Returns (restored image, RestoreInfo) and, if keep_candidates is True,
+    also the dict of candidate images.
+    """
+    noise_sigma = estimate_noise_sigma(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+    before = brisque_score(bgr)
+    if before <= BRISQUE_THRESHOLD:              # good quality: no change
+        info = RestoreInfo(before, before, "none", False, {}, noise_sigma)
+        return (bgr, info, {}) if keep_candidates else (bgr, info)
+    candidates = restoration_candidates(bgr)
+    scores = {"none": before}
+    scores.update({name: brisque_score(img) for name, img in candidates.items() if name != "none"})
+    best = min(scores, key=scores.get)
+    info = RestoreInfo(before, scores[best], best, True, scores, noise_sigma)
+    return (candidates[best], info, candidates) if keep_candidates else (candidates[best], info)
 
 
 def otsu_threshold(channel: np.ndarray) -> tuple[int, float]:
@@ -274,7 +401,8 @@ class Result:
     final: np.ndarray          # TARGET_SIZE x TARGET_SIZE output
     final_mask: np.ndarray     # foreground mask at the final size
     content_box: tuple[int, int, int, int]
-    noise_sigma: float
+    restored: np.ndarray       # after the quality-guided restoration
+    restore: RestoreInfo
     times_ms: dict[str, float]
     jpeg: bytes
     raw_shape: tuple[int, int]
@@ -295,8 +423,8 @@ def process_image(path: Path) -> Result | None:
     times["work_resize"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    clean, noise_sigma = denoise(work)
-    times["denoise"] = time.perf_counter() - t0
+    clean, restore = iqa_guided_restore(work)
+    times["iqa_restore"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     mask = green_background_mask(clean)
@@ -317,7 +445,7 @@ def process_image(path: Path) -> Result | None:
     times["save"] = time.perf_counter() - t0   # the file write is added by the caller
 
     times_ms = {k: v * 1000.0 for k, v in times.items()}
-    return Result(work, mask, enhanced, final, final_mask, box, noise_sigma,
+    return Result(work, mask, enhanced, final, final_mask, box, clean, restore,
                   times_ms, jpeg, raw.shape[:2])
 
 
@@ -355,7 +483,7 @@ def content_region(box: tuple[int, int, int, int], size: int) -> np.ndarray:
 
 def baseline_variants(work: np.ndarray, res: Result) -> dict[str, np.ndarray]:
     """Final-size images made by the baseline methods and by the pipeline."""
-    clean, _ = denoise(work)
+    clean = res.restored
     return {
         "A_resize_only": letterbox(work, TARGET_SIZE)[0],
         "B_global_HE": letterbox(global_hist_equalize(work), TARGET_SIZE)[0],
@@ -369,7 +497,7 @@ VARIANT_LABELS = {
     "A_resize_only": "A: resize only",
     "B_global_HE": "B: global HE",
     "C_CLAHE_only": "C: CLAHE only",
-    "D_enhanced_no_mask": "D: denoise + CLAHE\n+ sharpen",
+    "D_enhanced_no_mask": "D: restore + CLAHE\n+ sharpen",
     "E_full_pipeline": "E: full pipeline\n(with mask)",
 }
 
@@ -438,7 +566,13 @@ def run(input_dir: Path, output_dir: Path, results_dir: Path, samples_per_class:
                 "class": cls, "file": path.name,
                 "raw_height": res.raw_shape[0], "raw_width": res.raw_shape[1],
                 "raw_bytes": path.stat().st_size, "processed_bytes": len(res.jpeg),
-                "noise_sigma": round(res.noise_sigma, 3),
+                "noise_sigma": round(res.restore.noise_sigma, 3),
+                "brisque_before": round(res.restore.brisque_before, 2),
+                "brisque_after": round(res.restore.brisque_after, 2),
+                "brisque_flagged": int(res.restore.flagged),
+                "restore_filter": res.restore.filter,
+                **{f"brisque_{name}": (round(res.restore.scores[name], 2) if name in res.restore.scores else "")
+                   for name in RESTORE_FILTERS},
                 "otsu_t": res.mask.otsu_t, "otsu_eta": round(res.mask.otsu_eta, 4),
                 "dist_t": res.mask.dist_t,
                 "green_fraction": round(res.mask.green_fraction, 4),
@@ -459,6 +593,8 @@ def run(input_dir: Path, output_dir: Path, results_dir: Path, samples_per_class:
                 m = quality_metrics(img, reg)
                 baseline_rows.append({"class": cls, "file": path.name, "variant": name,
                                       "jpeg_bytes": len(encode_jpeg(img)) if name != "E_full_pipeline" else len(res.jpeg),
+                                      # BRISQUE has no meaning on an image with a black masked background
+                                      "brisque": round(brisque_score(img), 2) if name != "E_full_pipeline" else float("nan"),
                                       **{k: round(v, 3) for k, v in m.items()}})
             if i in pick:
                 samples[cls].append((path.name, res))
@@ -500,7 +636,35 @@ def run(input_dir: Path, output_dir: Path, results_dir: Path, samples_per_class:
             "mean_sharpness": round(float(np.mean([r["sharpness"] for r in rows])), 1),
             "mean_brightness": round(float(np.mean([r["brightness"] for r in rows])), 2),
             "total_MB": round(sum(r["jpeg_bytes"] for r in rows) / mb, 3),
+            "mean_brisque": ("" if name == "E_full_pipeline"
+                             else round(float(np.mean([r["brisque"] for r in rows])), 2)),
         })
+
+    # quality check and restoration summary
+    flagged = [r for r in per_image if r["brisque_flagged"]]
+    iqa_rows = []
+    for name in RESTORE_FILTERS:
+        chosen = [r for r in flagged if r["restore_filter"] == name]
+        tried = [r[f"brisque_{name}"] for r in flagged if r[f"brisque_{name}"] != ""]
+        iqa_rows.append({
+            "filter": name, "times_selected": len(chosen),
+            "mean_score_all_flagged": round(float(np.mean(tried)), 2) if tried else "",
+            "mean_before_when_selected": round(float(np.mean([r["brisque_before"] for r in chosen])), 2) if chosen else "",
+            "mean_after_when_selected": round(float(np.mean([r["brisque_after"] for r in chosen])), 2) if chosen else "",
+        })
+    iqa_class_rows = []
+    for cls in list(classes) + ["TOTAL"]:
+        rows = per_image if cls == "TOTAL" else [r for r in per_image if r["class"] == cls]
+        fl = [r for r in rows if r["brisque_flagged"]]
+        iqa_class_rows.append({
+            "class": cls, "images": len(rows), "flagged": len(fl),
+            "mean_brisque_before": round(float(np.mean([r["brisque_before"] for r in rows])), 2),
+            "mean_brisque_after": round(float(np.mean([r["brisque_after"] for r in rows])), 2),
+            "flagged_mean_before": round(float(np.mean([r["brisque_before"] for r in fl])), 2) if fl else "",
+            "flagged_mean_after": round(float(np.mean([r["brisque_after"] for r in fl])), 2) if fl else "",
+        })
+    write_csv(results_dir / "iqa_filter_summary.csv", iqa_rows)
+    write_csv(results_dir / "iqa_class_summary.csv", iqa_class_rows)
 
     write_csv(results_dir / "metrics_per_image.csv", per_image)
     write_csv(results_dir / "storage_summary.csv", storage_rows)
@@ -519,9 +683,16 @@ def run(input_dir: Path, output_dir: Path, results_dir: Path, samples_per_class:
     lines += [f"  {r['stage']:<14}{r['mean_ms']:>9.2f}  (std {r['std_ms']:.2f})" for r in timing_rows]
     lines += [f"  Wall time for the full batch, including the baseline measurements: {wall:.1f} s",
               "", "Baseline comparison (mean over all images)",
-              f"{'variant':<22}{'contrast':>10}{'entropy':>9}{'sharpness':>11}{'brightness':>12}{'total MB':>10}"]
+              f"{'variant':<22}{'contrast':>10}{'entropy':>9}{'sharpness':>11}{'brightness':>12}{'total MB':>10}{'BRISQUE':>9}"]
     lines += [f"{r['variant']:<22}{r['mean_contrast']:>10.2f}{r['mean_entropy']:>9.3f}{r['mean_sharpness']:>11.1f}"
-              f"{r['mean_brightness']:>12.2f}{r['total_MB']:>10.2f}" for r in baseline_summary]
+              f"{r['mean_brightness']:>12.2f}{r['total_MB']:>10.2f}{str(r['mean_brisque']) or 'n/a':>9}" for r in baseline_summary]
+    lines += ["", f"Quality check (BRISQUE, lower is better; restoration if the score is above {BRISQUE_THRESHOLD:.0f})",
+              f"{'class':<14}{'images':>7}{'flagged':>9}{'before':>9}{'after':>8}{'flagged before':>16}{'flagged after':>15}"]
+    lines += [f"{r['class']:<14}{r['images']:>7}{r['flagged']:>9}{r['mean_brisque_before']:>9.2f}{r['mean_brisque_after']:>8.2f}"
+              f"{str(r['flagged_mean_before']):>16}{str(r['flagged_mean_after']):>15}" for r in iqa_class_rows]
+    lines += ["", "Filter kept for the flagged images",
+              f"{'filter':<18}{'selected':>9}{'mean score on all flagged':>28}"]
+    lines += [f"{r['filter']:<18}{r['times_selected']:>9}{str(r['mean_score_all_flagged']):>28}" for r in iqa_rows]
     if skipped:
         lines += ["", "Skipped files:"] + [f"  {s}" for s in skipped]
     summary = "\n".join(lines)
@@ -531,7 +702,7 @@ def run(input_dir: Path, output_dir: Path, results_dir: Path, samples_per_class:
     if make_figures:
         import figures
         figures.make_all(fig_dir, samples, per_image, storage_rows, timing_rows,
-                         baseline_summary, input_dir)
+                         baseline_summary, input_dir, iqa_rows)
         print(f"\nFigures written to {fig_dir}")
 
 

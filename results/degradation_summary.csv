@@ -1,0 +1,4 @@
+degradation,images,psnr_degraded,psnr_brisque_selected,psnr_best_filter,ssim_degraded,ssim_brisque_selected,ssim_best_filter,selection_agrees_percent
+blur,60,31.0,31.46,32.36,0.8658,0.8758,0.8889,13.3
+gaussian_noise,60,24.82,29.93,31.74,0.6142,0.8284,0.8845,0.0
+salt_pepper,60,18.95,34.89,35.03,0.3881,0.9354,0.9396,98.3

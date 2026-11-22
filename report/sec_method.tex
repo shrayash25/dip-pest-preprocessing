@@ -1,0 +1,123 @@
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Dataset}
+The course dataset was not available when this work was done, so a public stand-in dataset with the same six classes was assembled. No single public dataset contains all six classes. The images are research-grade observations from iNaturalist \cite{inaturalist} with Creative Commons licences; ``research-grade'' means that the species identification was confirmed by more than one person. One photo was taken from each observation to avoid near-duplicate frames, and photos with a short side below 800 pixels were skipped. Table~\ref{tab:dataset} lists the classes. The download script writes a manifest with the photographer, licence and source page of each image, and later runs read that manifest, so the dataset is reproducible.
+
+\begin{table}[H]
+\centering
+\caption{Stand-in dataset. All images are field photographs with uncontrolled lighting and background.}
+\label{tab:dataset}
+\begin{tabular}{llr}
+\toprule
+Class & Taxon used & Images \\
+\midrule
+Green aphid  & \textit{Myzus persicae}, \textit{Acyrthosiphon pisum} & 90 \\
+Yellow aphid & \textit{Aphis nerii} & 100 \\
+Black aphid  & \textit{Aphis fabae} complex & 100 \\
+Whitefly     & family Aleyrodidae & 100 \\
+Red mite     & genus \textit{Tetranychus} & 100 \\
+Mealybug     & family Pseudococcidae & 100 \\
+\midrule
+Total & & 590 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Pipeline}
+Figure~\ref{fig:flowchart} shows the pipeline. Each image goes through seven stages.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  node distance=5.5mm and 9mm,
+  box/.style={draw, rounded corners=2pt, align=center, minimum width=52mm, minimum height=8.5mm, font=\small, fill=black!3},
+  dec/.style={draw, diamond, aspect=2.6, align=center, inner sep=1pt, font=\small, fill=black!3},
+  side/.style={draw, rounded corners=2pt, align=center, minimum width=50mm, minimum height=8.5mm, font=\small, fill=black!3},
+  arr/.style={-{Latex[length=2mm]}, thick},
+  lab/.style={font=\footnotesize}
+]
+\node[box] (load) {1. Load, scale to 8-bit BGR};
+\node[box, below=of load] (work) {2. Working resize (long side $\le 1024$)};
+\node[dec, below=of work] (iqa) {3. BRISQUE $> 30$?};
+\node[side, right=of iqa] (restore) {Apply 6 candidate filters,\\keep the lowest BRISQUE};
+\node[box, below=of iqa] (mask) {4. Green background mask\\(HSV range, Otsu on LAB chroma distance, morphology)};
+\node[dec, below=of mask] (fb) {Foreground in $[1\%, 98\%]$?};
+\node[side, right=of fb] (keep) {Fallback: keep the full image};
+\node[box, below=of fb] (clahe) {5. CLAHE on $L^*$ + unsharp masking,\\then apply the mask};
+\node[box, below=of clahe] (resize) {6. Resize with aspect-ratio padding to $512\times512$};
+\node[box, below=of resize] (save) {7. JPEG (quality 85), save to the class folder};
+\draw[arr] (load) -- (work);
+\draw[arr] (work) -- (iqa);
+\draw[arr] (iqa) -- node[lab, above] {yes} (restore);
+\draw[arr] (iqa) -- node[lab, right] {no (image unchanged)} (mask);
+\draw[arr] (restore.south) |- ([yshift=3mm]mask.east);
+\draw[arr] (mask) -- (fb);
+\draw[arr] (fb) -- node[lab, above] {no} (keep);
+\draw[arr] (fb) -- node[lab, right] {yes} (clahe);
+\draw[arr] (keep.south) |- ([yshift=2mm]clahe.east);
+\draw[arr] (clahe) -- (resize);
+\draw[arr] (resize) -- (save);
+\end{tikzpicture}
+\caption{Algorithm flowchart of the preprocessing pipeline.}
+\label{fig:flowchart}
+\end{figure}
+
+\paragraph{Stages 1--2: load and normalise.} The image is read with its original bit depth, scaled to 8 bits and converted to three channels. It is then reduced so that its long side is at most 1024 pixels. Masking and enhancement run at this working resolution, which keeps small pests visible and makes the time per image predictable.
+
+\paragraph{Stage 3: quality check and restoration.} This stage follows the reference paper. The BRISQUE score of the image is calculated. If it is at most 30, the image is not changed. If it is above 30, six candidate filters are applied (median, Gaussian, Wiener, Richardson--Lucy, total variation, unsharp masking), BRISQUE is calculated for each result, and the result with the lowest score is kept. The unchanged image is also a candidate, so this stage cannot make the score worse. In the paper the filter and its parameters were selected by hand for each image; here the selection is automatic, which is the first future-work item that the authors list. The smoothing filters use the colour image because noise is in all channels. The deblurring filters use only $L^*$ so that they do not make colour fringes. The PSF is not known for a field photo, so a Gaussian PSF is assumed.
+
+\paragraph{Stage 4: green background mask.} A plain HSV green range removes every green pixel, which also removes pests that are pale, translucent or green and pick up the colour of the leaf. The mask therefore has three steps.
+\begin{enumerate}[nosep]
+\item \textbf{HSV range.} After a Gaussian pre-smoothing, pixels with a green hue are the candidate leaf pixels. If fewer than 2\% of pixels are candidates, there is no leaf background and the image is kept as it is.
+\item \textbf{Dominant leaf colour.} The median $(a^*, b^*)$ of the candidates is the dominant leaf colour. The chroma distance $d = \sqrt{(a^*-a^*_{m})^2 + (b^*-b^*_{m})^2}$ of each pixel from it is calculated.
+\item \textbf{Otsu threshold.} Otsu's method on $d$, over the candidates only, separates ``leaf'' (near the dominant colour) from ``other'' (a pest with a green tint, a vein, a highlight). The threshold is limited to $[8, 25]$: below 8 a leaf with one colour mode would be split in two, and above 25 a clearly different colour would be removed.
+\end{enumerate}
+The background is the candidates with $d$ below the threshold. Opening and closing clean it, regions and holes smaller than 0.03\% of the image are removed, and the foreground is dilated to keep a margin around the pest. If the foreground is less than 1\% or more than 98\% of the image, the mask is not applied.
+
+\paragraph{Stage 5: enhancement.} CLAHE is applied to $L^*$, followed by unsharp masking on $L^*$. The mask is then applied and the background becomes black.
+
+\paragraph{Stages 6--7: resize and compress.} The result is resized with aspect-ratio padding to $512\times512$ and saved as an 8-bit JPEG in the folder of its class.
+
+\subsection{Parameter settings}
+Table~\ref{tab:params} gives all parameters. They are constants at the top of the script.
+
+\begin{table}[H]
+\centering
+\caption{Parameter settings.}
+\label{tab:params}
+\small
+\begin{tabular}{lll}
+\toprule
+Stage & Parameter & Value \\
+\midrule
+Resize & Working long side; output size & 1024 px; $512\times512$ \\
+Quality check & BRISQUE threshold & 30 (from \cite{jia2025}) \\
+Median filter & Window & $3\times3$ \\
+Gaussian filter & $\sigma$ & 1.0 \\
+Wiener filter & Gaussian PSF $\sigma$; $K$ & 1.2; 0.02 \\
+Richardson--Lucy & Gaussian PSF $\sigma$; iterations & 1.2; 10 \\
+Total variation & Weight $\lambda$ & 0.10 \\
+Sharpening candidate & $\sigma$; gain $a$ & 1.0; 1.0 \\
+Mask & Pre-smoothing $\sigma$ & 2.0 \\
+Mask & HSV green range (OpenCV scale) & $H\in[35,90]$, $S\ge30$, $V\ge40$ \\
+Mask & Chroma distance threshold & Otsu, limited to $[8,25]$ \\
+Mask & Opening; closing; dilation (ellipse) & $5\times5$; $9\times9$; $7\times7$ \\
+Mask & Minimum region area & 0.03\% of the image \\
+Mask & Foreground limits for the fallback & 1\% and 98\% \\
+CLAHE & Clip limit; tile grid & 2.0; $8\times8$ \\
+Unsharp masking & $\sigma$; gain $a$ & 1.0; 0.6 \\
+Compression & JPEG quality & 85 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Experiments}
+\label{sec:experiments}
+Four experiments measure the pipeline.
+\begin{enumerate}[nosep]
+\item \textbf{Storage and time.} Raw and processed size for each class, and the time of each stage for each image.
+\item \textbf{Baseline comparison.} Five versions of each image at the same output size: (A) resize only, (B) global histogram equalisation, (C) CLAHE only, (D) restoration + CLAHE + sharpening without the mask, (E) the full pipeline. Contrast, entropy, sharpness, BRISQUE and compressed size are compared. For version E the metrics use only the foreground pixels, and BRISQUE is not reported because a black background is not a natural image.
+\item \textbf{Controlled degradation.} BRISQUE selects the filter, so a BRISQUE improvement alone does not prove that the selected filter is correct. Sixty clean images (BRISQUE $\le 20$, ten for each class) are degraded with Gaussian blur ($\sigma = 1.5$), Gaussian noise ($\sigma = 15$ grey levels) and 4\% salt-and-pepper noise. Each filter is applied and PSNR and SSIM are measured against the clean image.
+\item \textbf{Classifier.} An RBF support vector machine is trained on colour histograms (HSV) and texture histograms (local binary patterns) from versions A, C, D and E, with stratified 5-fold cross-validation repeated three times. All versions use the same folds.
+\end{enumerate}

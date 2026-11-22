@@ -3,29 +3,49 @@ Output size: 512x512, JPEG quality 85
 
 Storage (MB)
 class          images       raw  processed  reduction   ratio   ms/img  mask %
-black_aphid       100     84.64       4.43     94.76%    19.1     24.1    88.0
-green_aphid        90     98.42       3.45     96.49%    28.5     24.6    64.4
-mealybug          100     82.18       4.28     94.79%    19.2     23.0    73.0
-red_mite          100    113.40       5.75     94.93%    19.7     25.3    86.0
-whitefly          100     95.99       4.47     95.34%    21.4     26.2    84.0
-yellow_aphid      100     91.61       4.60     94.98%    19.9     24.1    92.0
-TOTAL             590    566.23      27.00     95.23%    21.0     24.6    81.5
+black_aphid       100     84.64       4.95     94.15%    17.1    146.6    88.0
+green_aphid        90     98.42       3.94     96.00%    25.0    124.8    64.4
+mealybug          100     82.18       4.98     93.94%    16.5    107.8    74.0
+red_mite          100    113.40       6.67     94.11%    17.0     97.6    86.0
+whitefly          100     95.99       5.04     94.75%    19.1    110.2    84.0
+yellow_aphid      100     91.61       5.15     94.37%    17.8    138.4    92.0
+TOTAL             590    566.23      30.73     94.57%    18.4    120.8    81.7
 
 Mean time for each stage (ms per image)
-  load               8.97  (std 4.26)
-  work_resize        1.09  (std 1.06)
-  denoise            2.03  (std 0.33)
-  mask               9.26  (std 3.65)
-  enhance            1.62  (std 0.31)
-  final_resize       0.28  (std 0.33)
-  save               1.31  (std 0.21)
-  TOTAL             24.57  (std 5.61)
-  Wall time for the full batch, including the baseline measurements: 26.4 s
+  load               9.15  (std 4.31)
+  work_resize        1.08  (std 1.04)
+  iqa_restore       97.81  (std 154.53)
+  mask               9.40  (std 3.68)
+  enhance            1.61  (std 0.28)
+  final_resize       0.29  (std 0.33)
+  save               1.46  (std 0.29)
+  TOTAL            120.81  (std 153.43)
+  Wall time for the full batch, including the baseline measurements: 95.4 s
 
 Baseline comparison (mean over all images)
-variant                 contrast  entropy  sharpness  brightness  total MB
-A_resize_only              43.12    7.041     4831.9      119.33     23.50
-B_global_HE                70.70    7.868    15325.6      120.81     32.31
-C_CLAHE_only               51.46    7.460    12861.5      118.72     31.54
-D_enhanced_no_mask         51.90    7.466     9207.9      118.87     29.70
-E_full_pipeline            55.06    7.497     9433.8      120.86     27.00
+variant                 contrast  entropy  sharpness  brightness  total MB  BRISQUE
+A_resize_only              43.12    7.041     4831.9      119.33     23.50    18.74
+B_global_HE                70.70    7.868    15325.6      120.81     32.31    15.13
+C_CLAHE_only               51.46    7.460    12861.5      118.72     31.54    13.69
+D_enhanced_no_mask         52.58    7.496    23534.9      118.64     35.47    12.14
+E_full_pipeline            55.66    7.522    23420.7      120.59     30.73      n/a
+
+Quality check (BRISQUE, lower is better; restoration if the score is above 30)
+class          images  flagged   before   after  flagged before  flagged after
+black_aphid       100       28    21.16   13.69           38.56          11.86
+green_aphid        90       14    18.84   13.76           45.24          12.59
+mealybug          100       19    17.71   13.77           40.77           20.0
+red_mite          100       16    19.70   17.01           36.79          19.97
+whitefly          100       20    18.89   16.20           37.83          24.41
+yellow_aphid      100       31    20.69   12.32           37.86          10.86
+TOTAL             590      128    19.51   14.47           39.11          15.88
+
+Filter kept for the flagged images
+filter             selected   mean score on all flagged
+none                      0                       39.11
+median                    2                       51.28
+gaussian                  0                       58.66
+wiener                   74                       18.54
+richardson_lucy           3                       25.04
+total_variation           1                        66.8
+sharpen                  48                       20.77

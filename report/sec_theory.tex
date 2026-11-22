@@ -1,0 +1,82 @@
+\section{Theory}
+\label{sec:theory}
+
+\subsection{Image degradation model}
+The reference paper \cite{jia2025} models an acquired image $g$ as an ideal image $f$ blurred by a point spread function (PSF) $h$ with additive noise $n$:
+\begin{equation}
+g(x,y) = f(x,y) * h(x,y) + n(x,y)
+\quad\Longleftrightarrow\quad
+G(u,v) = F(u,v)\,H(u,v) + N(u,v),
+\label{eq:degradation}
+\end{equation}
+where $*$ is 2-D convolution and capital letters are Fourier transforms. Restoration estimates $f$ from $g$. Which filter is correct depends on which term dominates: a smoothing filter removes $n$, and a deconvolution filter inverts $h$. A wrong choice makes the image worse, which is why a quality measurement comes first.
+
+\subsection{No-reference quality assessment: BRISQUE}
+Field images have no clean reference, so full-reference metrics such as PSNR cannot be used on them. BRISQUE \cite{mittal2012} needs only the image. It calculates the mean-subtracted contrast-normalised (MSCN) coefficients
+\begin{equation}
+\hat{I}(i,j) = \frac{I(i,j) - \mu(i,j)}{\sigma(i,j) + C},
+\end{equation}
+where $\mu$ and $\sigma$ are the local mean and standard deviation in a Gaussian window and $C$ is a small constant. For a natural, undistorted image the histogram of $\hat{I}$ is close to a Gaussian. Blur makes it more peaked and noise makes it flatter. BRISQUE fits a generalised Gaussian distribution to $\hat{I}$ and asymmetric generalised Gaussians to the products of neighbouring coefficients in four directions, at two scales. This gives 36 features, and a support vector regressor trained on human opinion scores maps them to one score. A lower score means better quality; the reference paper treats images below 30 as good.
+
+\subsection{Restoration filters}
+\label{sec:filters}
+\paragraph{Median filter.} Each pixel is replaced by the median of its $k\times k$ neighbourhood. An impulse (salt-and-pepper) pixel is an outlier in the sorted window and is never selected, so the filter removes impulse noise and keeps edges better than a linear filter.
+
+\paragraph{Gaussian filter.} The image is convolved with $G_\sigma(x,y)=\frac{1}{2\pi\sigma^2}\exp\!\left(-\frac{x^2+y^2}{2\sigma^2}\right)$. It is a low-pass filter that reduces zero-mean sensor noise, at the cost of some blur.
+
+\paragraph{Wiener filter.} The Wiener filter minimises the mean square error between the estimate and the ideal image. With a constant noise-to-signal power ratio $K = S_n/S_f$ it is
+\begin{equation}
+\hat{F}(u,v) = \frac{H^{*}(u,v)}{|H(u,v)|^{2} + K}\; G(u,v).
+\label{eq:wiener}
+\end{equation}
+Where $|H|^2 \gg K$ it acts as an inverse filter and restores detail; where $|H|^2 \ll K$ it attenuates, so noise is not amplified.
+
+\paragraph{Richardson--Lucy deconvolution.} This is an iterative maximum-likelihood estimate for Poisson noise \cite{richardson1972,lucy1974}:
+\begin{equation}
+\hat{f}_{k+1} = \hat{f}_k \cdot \left[\, h^{\star} * \frac{g}{h * \hat{f}_k} \,\right],
+\end{equation}
+where $h^{\star}$ is the flipped PSF. The estimate stays non-negative, and the number of iterations controls the trade-off between sharpness and noise amplification.
+
+\paragraph{Total variation denoising.} The Rudin--Osher--Fatemi model \cite{rudin1992,chambolle2004} finds
+\begin{equation}
+\hat{f} = \arg\min_{f}\; \tfrac{1}{2}\,\lVert f - g\rVert_2^2 + \lambda \int \lvert\nabla f\rvert \, dx\,dy .
+\end{equation}
+The penalty is on the total gradient magnitude and not on its square, so flat regions are smoothed while step edges stay sharp.
+
+\paragraph{Unsharp masking.} $f_s = f + a\,(f - G_\sigma * f)$ adds back the high-frequency part of the image with gain $a$. It increases edge contrast but also amplifies noise.
+
+\subsection{Colour spaces}
+RGB mixes brightness and colour in all three channels, which makes colour thresholds sensitive to lighting. Two other spaces are used.
+\begin{itemize}[nosep]
+\item \textbf{HSV} separates hue $H$ (the colour angle), saturation $S$ and value $V$. A leaf is selected with a range of $H$, almost independent of how bright it is.
+\item \textbf{CIELAB} separates lightness $L^*$ from two colour-opponent axes: $a^*$ (green to red) and $b^*$ (blue to yellow). Euclidean distance in the $(a^*,b^*)$ plane is close to the perceived colour difference. Enhancement on $L^*$ alone changes contrast and does not shift colours.
+\end{itemize}
+
+\subsection{Otsu's threshold}
+Otsu's method \cite{otsu1979} selects the threshold $t$ that maximises the between-class variance of a histogram with class probabilities $\omega_0(t),\omega_1(t)$ and class means $\mu_0(t),\mu_1(t)$:
+\begin{equation}
+\sigma_B^2(t) = \omega_0(t)\,\omega_1(t)\,\bigl[\mu_0(t) - \mu_1(t)\bigr]^2,
+\qquad t^{*} = \arg\max_t\, \sigma_B^2(t).
+\end{equation}
+It needs no manual parameter. It always returns a threshold, even for a histogram with one mode, so the result must be bounded when one class may be absent.
+
+\subsection{Morphological operations}
+For a binary mask $A$ and a structuring element $B$, erosion $A\ominus B$ shrinks regions and dilation $A\oplus B$ grows them. Opening $(A\ominus B)\oplus B$ removes regions smaller than $B$, and closing $(A\oplus B)\ominus B$ fills holes smaller than $B$. Connected-component labelling gives the area of each region, so regions below an area limit can be removed.
+
+\subsection{Contrast limited adaptive histogram equalisation}
+Global histogram equalisation maps grey level $r$ through the cumulative distribution, $s = (L-1)\sum_{j\le r} p(j)$. One mapping for the full image over-amplifies large uniform areas. CLAHE \cite{zuiderveld1994} divides the image into tiles and equalises each tile, with two changes: the tile histogram is clipped at a limit and the excess is redistributed, which bounds the slope of the mapping and therefore the noise amplification; and the mappings of adjacent tiles are bilinearly interpolated, which removes tile borders.
+
+\subsection{Resizing, bit depth and compression}
+An $H\times W$ image is scaled by $s = T/\max(H,W)$ and centred on a $T\times T$ canvas with zero padding. The aspect ratio is kept, so the shape of the pest is not distorted. Area interpolation is used for reduction because it averages the source pixels and so prevents aliasing. A 16-bit image is scaled to 8 bits by $I_8 = \mathrm{round}(I_{16}/257)$, which maps $65535$ to $255$ exactly.
+
+JPEG converts to YCbCr, subsamples the chroma channels, applies the discrete cosine transform to $8\times8$ blocks, quantises the coefficients and entropy-codes them. Quantisation removes high-frequency coefficients, so a smooth image compresses more. A masked background is constant, so it costs almost no bits.
+
+\subsection{Evaluation metrics}
+With grey image $I$, mean $\bar{I}$ and histogram $p$:
+\begin{align}
+\text{RMS contrast} &= \sqrt{\tfrac{1}{N}\textstyle\sum (I - \bar{I})^2}, &
+\text{Entropy} &= -\textstyle\sum_{k} p(k)\log_2 p(k), \\
+\text{Sharpness} &= \mathrm{Var}\bigl(\nabla^2 I\bigr), &
+\text{PSNR} &= 10\log_{10}\frac{255^2}{\mathrm{MSE}(f,\hat{f})}.
+\end{align}
+SSIM \cite{wang2004} compares local luminance, contrast and structure between a reference and a test image and is 1 for identical images. PSNR and SSIM need a reference image; the other metrics and BRISQUE do not.

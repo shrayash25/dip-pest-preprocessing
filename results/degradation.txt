@@ -1,0 +1,16 @@
+Controlled degradation test: 60 clean reference images (BRISQUE <= 20)
+
+Mean PSNR in dB (and how often BRISQUE selected the filter / how often it had the best PSNR)
+filter                                  blur            gaussian_noise               salt_pepper
+none                           31.00 ( 0/ 1)             24.82 ( 1/ 0)             18.95 ( 0/ 0)
+median                         30.87 ( 0/ 4)             30.06 (58/ 0)             35.03 (59/60)
+gaussian                       30.37 ( 0/ 0)             31.43 ( 0/31)             27.91 ( 0/ 0)
+wiener                         31.01 (45/ 0)             20.89 ( 0/ 0)             15.62 ( 0/ 0)
+richardson_lucy                32.32 (12/55)             22.46 ( 1/ 0)             17.96 ( 1/ 0)
+total_variation                28.72 ( 0/ 0)             31.43 ( 0/29)             23.69 ( 0/ 0)
+sharpen                        31.24 ( 3/ 0)             21.56 ( 0/ 0)             18.60 ( 0/ 0)
+
+degradation         PSNR degraded  BRISQUE choice  best filter  SSIM degraded  BRISQUE choice  best filter  agree %
+blur                        31.00           31.46        32.36         0.8658          0.8758       0.8889     13.3
+gaussian_noise              24.82           29.93        31.74         0.6142          0.8284       0.8845      0.0
+salt_pepper                 18.95           34.89        35.03         0.3881          0.9354       0.9396     98.3

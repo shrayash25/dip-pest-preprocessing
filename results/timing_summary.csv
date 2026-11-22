@@ -1,9 +1,9 @@
 stage,mean_ms,std_ms
-load,8.971,4.263
-work_resize,1.094,1.064
-denoise,2.026,0.329
-mask,9.26,3.649
-enhance,1.624,0.306
-final_resize,0.28,0.325
-save,1.313,0.215
-TOTAL,24.568,5.606
+load,9.155,4.311
+work_resize,1.079,1.039
+iqa_restore,97.811,154.526
+mask,9.4,3.68
+enhance,1.613,0.278
+final_resize,0.288,0.333
+save,1.459,0.287
+TOTAL,120.806,153.425

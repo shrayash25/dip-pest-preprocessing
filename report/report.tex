@@ -1,0 +1,556 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{graphicx,booktabs,amsmath,amssymb,float,caption,xcolor,listings,enumitem,array}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+\usepackage[hidelinks]{hyperref}
+\graphicspath{{figs/}}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\lstset{
+  language=Python, basicstyle=\ttfamily\scriptsize, breaklines=true, columns=fullflexible,
+  keywordstyle=\color{blue!60!black}, commentstyle=\color{green!40!black}, stringstyle=\color{red!55!black},
+  numbers=left, numberstyle=\tiny\color{gray}, numbersep=6pt, frame=single, rulecolor=\color{black!20},
+  showstringspaces=false, tabsize=4
+}
+
+% ---- cover details: fill in the three placeholders ---------------------------
+\newcommand{\courseline}{EEE F435 \quad Digital Image Processing}
+\newcommand{\authorone}{Shrayash Barnwal \quad 2023A3PS0361P}
+\newcommand{\authortwo}{Akshal Gondalia}
+\newcommand{\repourl}{https://github.com/shrayash25/dip-pest-preprocessing}
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{3.2cm}
+{\large \courseline\par}
+\vspace{0.4cm}
+{\large Project Report\par}
+\vspace{1.6cm}
+{\LARGE\bfseries Optimized Image Preprocessing and Feature Enhancement Pipeline for Plant Pest Detection\par}
+\vspace{2.2cm}
+{\large \authorone\par}
+\vspace{0.3cm}
+{\large \authortwo\par}
+\vfill
+{\small Reference paper: S. Jia, M. Horri Rezaei and B. Honarvar Shakibaei Asli, ``Enhancing Pest Detection in Deep Learning Through a Systematic Image Quality Assessment and Preprocessing Framework,'' \textit{J. Exp. Theor. Anal.}, vol.~3, no.~4, art.~39, 2025.\par}
+\vspace{1.5cm}
+\end{titlepage}
+
+\begin{abstract}
+\noindent Raw field images of plant pests are large, differ in quality, and contain leaf background that is not useful to a classifier. This report describes a reproducible batch pipeline in Python and OpenCV for six pest classes: green aphid, yellow aphid, black aphid, whitefly, red mite and mealybug. The pipeline follows the central idea of the reference paper: measure image quality first, then select the restoration from the measurement. Each image is scored with the BRISQUE no-reference metric. A low-quality image is processed by six candidate filters (median, Gaussian, Wiener, Richardson--Lucy, total variation, unsharp masking) and the best result is kept; the paper made this selection by hand, and here it is automatic. The pipeline then masks the green leaf background (HSV range and Otsu threshold on the LAB chroma distance), applies CLAHE and sharpening, resizes with aspect-ratio padding to $512\times512$ and compresses to JPEG. On 590 images the dataset size fell from 566.2~MB to 30.7~MB (94.6\%) at a mean of 121~ms for each image. For the 128 low-quality images the mean BRISQUE score fell from 39.1 to 15.9, close to the 40.75 to 16.17 that the paper reports. A controlled test with known clean images showed that the BRISQUE-selected filter raised PSNR by 0.5~dB for blur, 5.1~dB for Gaussian noise and 15.9~dB for salt-and-pepper noise. An SVM classifier gained 1.4 percentage points (45.0\% to 46.4\%), which is a small effect. The main limitations are that almost all the storage gain comes from resizing and compression, and that a colour mask cannot separate a green pest from a green leaf.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ==============================================================================
+\section{Introduction}
+
+\subsection{Problem statement}
+Automatic pest identification depends on images that are taken in the field with phones and handheld cameras. Three properties of these images cause problems for a machine-learning model.
+\begin{itemize}[nosep]
+\item \textbf{Size.} A raw photo has several megapixels, while a classifier uses an input of a few hundred pixels on each side. Storing and loading the raw files wastes space and time.
+\item \textbf{Variable quality.} Blur, sensor noise and uneven light hide the small textures (body segments, wax, hairs) that separate one pest from another.
+\item \textbf{Irrelevant background.} Most pixels are healthy leaf. A model can learn the host plant in place of the pest.
+\end{itemize}
+
+\subsection{Motivation}
+Jia et al.\ \cite{jia2025} argue that image quality management is a prerequisite for a detector and not an optional step. They score each image with no-reference quality metrics, restore the low-quality images with a filter chosen for each image, and then train a YOLOv5 detector. They state two limitations of their own work: the filter and its parameters were selected by hand, which does not scale, and the cost of trying many filters is high. This project implements their quality-first idea as an automatic batch process and adds the stages that a dataset needs before training: background masking, contrast enhancement, size normalisation and compression.
+
+\subsection{Objectives}
+\begin{enumerate}[nosep]
+\item Build a batch script that runs from start to end with one command and writes size-reduced images into one folder for each of the six classes.
+\item Implement the quality assessment and restoration stage of the reference paper, with automatic filter selection.
+\item Segment out the healthy leaf background without losing pale or small pests.
+\item Apply local contrast and edge enhancement.
+\item Measure the storage reduction, the time for each image, and the quality before and after, and compare with baseline methods.
+\item Test whether the processing helps a classifier.
+\end{enumerate}
+
+% ==============================================================================
+\input{sec_theory}
+\input{sec_method}
+
+% ==============================================================================
+\section{Implementation}
+
+\subsection{Software}
+The project is in Python 3.13 with OpenCV 5.1 (contrib build, for the BRISQUE module), NumPy 2.5, scikit-image 0.26, scikit-learn 1.9 and Matplotlib 3.11 \cite{opencv,scikit-image,scikit-learn}. Exact versions are pinned in \texttt{requirements.txt}. All measurements were made on a laptop with an Apple M4 processor and 16~GB of memory, on the CPU only. The code is available at \url{\repourl}.
+
+\subsection{Program structure}
+\begin{table}[H]
+\centering
+\caption{Scripts.}
+\small
+\begin{tabular}{ll}
+\toprule
+File & Purpose \\
+\midrule
+\texttt{run\_all.py} & Runs all the steps in order with one command \\
+\texttt{download\_dataset.py} & Downloads the dataset and writes the attribution manifest \\
+\texttt{pest\_pipeline.py} & Pipeline stages, batch run, metrics and summary tables \\
+\texttt{figures.py} & Step plots and charts \\
+\texttt{degradation\_experiment.py} & Controlled degradation test (PSNR, SSIM) \\
+\texttt{classify\_eval.py} & SVM comparison of raw and processed images \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Main functions}
+Table~\ref{tab:functions} lists the functions that implement each stage in \texttt{pest\_pipeline.py}.
+
+\begin{table}[H]
+\centering
+\caption{Functions for each processing stage.}
+\label{tab:functions}
+\small
+\begin{tabular}{p{4.6cm}p{10.4cm}}
+\toprule
+Function & Processing step \\
+\midrule
+\texttt{load\_image} & Reads the file; scales 16-bit data to 8-bit; converts grey or BGRA to BGR \\
+\texttt{limit\_long\_side} & Area-interpolation resize to the working resolution \\
+\texttt{brisque\_score} & BRISQUE score with the OpenCV quality module \\
+\texttt{wiener\_deconvolve} & Wiener filter, Eq.~\eqref{eq:wiener}, with the FFT; reflect padding reduces ringing at the borders \\
+\texttt{richardson\_lucy} & Richardson--Lucy iterations with a Gaussian PSF \\
+\texttt{total\_variation}, \texttt{sharpen\_filter} & Total variation denoising; unsharp masking \\
+\texttt{iqa\_guided\_restore} & Scores the image, applies the candidates if needed, keeps the lowest score \\
+\texttt{otsu\_threshold} & Otsu's method from the histogram, written in NumPy; also returns the separability $\sigma_B^2/\sigma_T^2$ \\
+\texttt{green\_background\_mask} & HSV range, dominant leaf colour, Otsu on the chroma distance, morphology, region filter, fallback \\
+\texttt{clahe\_on\_lightness} & CLAHE on $L^*$ and unsharp masking \\
+\texttt{letterbox} & Resize with aspect-ratio padding \\
+\texttt{encode\_jpeg} & JPEG compression at quality 85 \\
+\texttt{quality\_metrics} & Brightness, RMS contrast, entropy and Laplacian variance inside a region \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three implementation points matter for the results.
+\begin{itemize}[nosep]
+\item \textbf{Fair metrics.} Padding and masked background are black. If they were included, contrast and entropy would change for reasons that have nothing to do with enhancement. All quality metrics are therefore calculated only inside the image content, and for the masked output only inside the foreground.
+\item \textbf{Fair timing.} One image is processed before timing starts, because the first OpenCV call includes start-up cost. Each stage is timed separately, and the baseline measurements are not included in the pipeline time.
+\item \textbf{Reproducibility.} File lists are sorted, random seeds are fixed, and the dataset is defined by a manifest file. Running \texttt{python run\_all.py} recreates every table and figure in this report.
+\end{itemize}
+
+% ==============================================================================
+\section{Results}
+
+\subsection{Processing stages}
+Figure~\ref{fig:steps} shows one image of each class at each stage. The mask keeps the pests and removes the leaf in the yellow aphid, black aphid, mealybug and whitefly examples. Where the image has no green background, or where the mask would keep less than 1\% or more than 98\% of the image, the mask is not applied and the full image is kept (a white mask).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.74\textwidth]{steps_overview.jpg}
+\caption{Processing steps for one image of each class: original, foreground mask, enhanced image, and final $512\times512$ output.}
+\label{fig:steps}
+\end{figure}
+
+\subsection{Storage reduction}
+Table~\ref{tab:storage} and Figure~\ref{fig:storage} give the storage result. The dataset fell from 566.2~MB to 30.7~MB, a reduction of 94.6\% (ratio 18.4). The mean file size fell from 983~kB to 53~kB.
+
+\begin{table}[H]
+\centering
+\caption{Storage footprint and mean processing time for each class.}
+\label{tab:storage}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+Class & Images & Raw (MB) & Processed (MB) & Reduction (\%) & Ratio & Time (ms/image) \\
+\midrule
+Black aphid  & 100 &  84.64 & 4.95 & 94.15 & 17.1 & 146.6 \\
+Green aphid  &  90 &  98.42 & 3.94 & 96.00 & 25.0 & 124.8 \\
+Mealybug     & 100 &  82.18 & 4.98 & 93.94 & 16.5 & 107.8 \\
+Red mite     & 100 & 113.40 & 6.67 & 94.11 & 17.0 &  97.6 \\
+Whitefly     & 100 &  95.99 & 5.04 & 94.75 & 19.1 & 110.2 \\
+Yellow aphid & 100 &  91.61 & 5.15 & 94.37 & 17.8 & 138.4 \\
+\midrule
+Total        & 590 & 566.23 & 30.73 & 94.57 & 18.4 & 120.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.72\textwidth]{storage_per_class.png}
+\caption{Raw and processed storage for each class.}
+\label{fig:storage}
+\end{figure}
+
+\subsection{Execution time}
+The mean time is 120.8~ms for each image and the median is 46.0~ms (Table~\ref{tab:timing}, Figure~\ref{fig:timing}). The distribution has two groups. An image that passes the quality check takes 45~ms on average. An image that is flagged takes 395~ms, because six filters and six more BRISQUE scores are calculated. The 22\% of images that are flagged account for most of the total time.
+
+\begin{table}[H]
+\centering
+\caption{Mean time for each stage (590 images).}
+\label{tab:timing}
+\small
+\begin{tabular}{lrr}
+\toprule
+Stage & Mean (ms) & Std.\ dev.\ (ms) \\
+\midrule
+Load and decode & 9.15 & 4.31 \\
+Working resize & 1.08 & 1.04 \\
+Quality check and restoration & 97.81 & 154.53 \\
+Green background mask & 9.40 & 3.68 \\
+CLAHE and sharpening & 1.61 & 0.28 \\
+Final resize and padding & 0.29 & 0.33 \\
+JPEG encode and write & 1.46 & 0.29 \\
+\midrule
+Total & 120.81 & 153.43 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.66\textwidth]{time_per_stage.png}
+\caption{Mean time for each stage.}
+\label{fig:timing}
+\end{figure}
+
+\subsection{Quality assessment and restoration}
+The quality check flagged 128 of the 590 images (21.7\%) with a BRISQUE score above 30. For these images the mean score fell from 39.11 to 15.88 after the selected filter (Table~\ref{tab:iqa}, Figure~\ref{fig:brisque}). The reference paper reports 40.75 to 16.17 for its hand-selected filters on 12 images, so the automatic selection reaches a comparable level on a set that is ten times larger. Over all 590 images the mean score fell from 19.51 to 14.47.
+
+\begin{table}[H]
+\centering
+\caption{BRISQUE before and after the restoration stage (lower is better).}
+\label{tab:iqa}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+ & & & \multicolumn{2}{c}{All images} & \multicolumn{2}{c}{Flagged images} \\
+\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Class & Images & Flagged & Before & After & Before & After \\
+\midrule
+Black aphid  & 100 & 28 & 21.16 & 13.69 & 38.56 & 11.86 \\
+Green aphid  &  90 & 14 & 18.84 & 13.76 & 45.24 & 12.59 \\
+Mealybug     & 100 & 19 & 17.71 & 13.77 & 40.77 & 20.00 \\
+Red mite     & 100 & 16 & 19.70 & 17.01 & 36.79 & 19.97 \\
+Whitefly     & 100 & 20 & 18.89 & 16.20 & 37.83 & 24.41 \\
+Yellow aphid & 100 & 31 & 20.69 & 12.32 & 37.86 & 10.86 \\
+\midrule
+Total        & 590 & 128 & 19.51 & 14.47 & 39.11 & 15.88 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{brisque_before_after.png}
+\caption{Left: BRISQUE of each flagged image before and after the selected filter. Right: distribution over all images.}
+\label{fig:brisque}
+\end{figure}
+
+Table~\ref{tab:filters} shows which filter was selected. No single filter is best for all images, which agrees with the paper. The Wiener filter was selected for 74 images and unsharp masking for 48. The smoothing filters (median, Gaussian, total variation) were almost never selected and gave worse mean scores than the unchanged image. The reason is the dataset: these photographs are limited by soft focus and not by noise, so smoothing removes detail that BRISQUE counts as quality. Figure~\ref{fig:restore} shows the candidates for four images.
+
+\begin{table}[H]
+\centering
+\caption{Filter selection for the 128 flagged images.}
+\label{tab:filters}
+\small
+\begin{tabular}{lrr}
+\toprule
+Filter & Times selected & Mean BRISQUE on all flagged images \\
+\midrule
+No change        &  0 & 39.11 \\
+Median           &  2 & 51.28 \\
+Gaussian         &  0 & 58.66 \\
+Wiener           & 74 & 18.54 \\
+Richardson--Lucy &  3 & 25.04 \\
+Total variation  &  1 & 66.80 \\
+Unsharp masking  & 48 & 20.77 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{restoration_examples.jpg}
+\caption{Candidate filters on four flagged images (centre crop). The kept result is marked.}
+\label{fig:restore}
+\end{figure}
+
+\subsection{Controlled degradation test}
+Table~\ref{tab:degradation} and Figure~\ref{fig:degpsnr} give the result of the test with known clean images. This test answers a question that BRISQUE cannot answer alone: is the selected filter closer to the true image?
+
+\begin{table}[H]
+\centering
+\caption{Mean PSNR (dB) of each filter on 60 degraded images. In brackets: the number of images for which BRISQUE selected the filter / for which the filter had the best PSNR.}
+\label{tab:degradation}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}
+\toprule
+Filter & Gaussian blur & Gaussian noise & Salt-and-pepper \\
+\midrule
+Degraded (no filter) & 31.00 (0 / 1)  & 24.82 (1 / 0)  & 18.95 (0 / 0) \\
+Median               & 30.87 (0 / 4)  & 30.06 (58 / 0) & \textbf{35.03} (59 / 60) \\
+Gaussian             & 30.37 (0 / 0)  & \textbf{31.43} (0 / 31) & 27.91 (0 / 0) \\
+Wiener               & 31.01 (45 / 0) & 20.89 (0 / 0)  & 15.62 (0 / 0) \\
+Richardson--Lucy     & \textbf{32.32} (12 / 55) & 22.46 (1 / 0) & 17.96 (1 / 0) \\
+Total variation      & 28.72 (0 / 0)  & \textbf{31.43} (0 / 29) & 23.69 (0 / 0) \\
+Unsharp masking      & 31.24 (3 / 0)  & 21.56 (0 / 0)  & 18.60 (0 / 0) \\
+\midrule
+PSNR, BRISQUE-selected & 31.46 & 29.93 & 34.89 \\
+PSNR, best filter per image & 32.36 & 31.74 & 35.03 \\
+SSIM, degraded to selected & 0.866 to 0.876 & 0.614 to 0.828 & 0.388 to 0.935 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{degradation_psnr.png}
+\caption{Mean PSNR of each filter for each type of degradation.}
+\label{fig:degpsnr}
+\end{figure}
+
+The selection always chose the correct family of filter: a deblurring filter for all 60 blurred images, and a smoothing filter for 58 of 60 noisy images and 59 of 60 impulse-noise images. It chose a deblurring filter for a noisy image in only 2 of 120 cases. The selected filter raised PSNR in all three cases: by 0.46~dB for blur, 5.11~dB for Gaussian noise and 15.94~dB for salt-and-pepper noise. Inside the correct family, the selected filter was not always the one with the best PSNR: BRISQUE preferred the Wiener filter where Richardson--Lucy was closer to the truth, and the median filter where the Gaussian filter was closer. The cost of this is 0.9~dB for blur and 1.8~dB for Gaussian noise. Figure~\ref{fig:degex} shows one example of each case.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.86\textwidth]{degradation_examples.jpg}
+\caption{One clean image with each degradation, the BRISQUE-selected result and the result with the best PSNR (centre crop).}
+\label{fig:degex}
+\end{figure}
+
+\subsection{Enhancement and comparison with baseline methods}
+Table~\ref{tab:baseline} compares the five versions. Figure~\ref{fig:clahe} shows why CLAHE was selected over global histogram equalisation, and Figure~\ref{fig:basevis} shows the versions side by side.
+
+\begin{table}[H]
+\centering
+\caption{Baseline comparison, mean over 590 images at $512\times512$: RMS contrast, entropy in bits, sharpness as Laplacian variance, BRISQUE, and total compressed size. Version E is measured on foreground pixels only.}
+\label{tab:baseline}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Version & Contrast & Entropy & Sharpness & BRISQUE & Size (MB) \\
+\midrule
+A: resize only                      & 43.12 & 7.041 &  4832 & 18.74 & 23.50 \\
+B: global histogram equalisation    & 70.70 & 7.868 & 15326 & 15.13 & 32.31 \\
+C: CLAHE only                       & 51.46 & 7.460 & 12862 & 13.69 & 31.54 \\
+D: restoration + CLAHE + sharpening & 52.58 & 7.496 & 23535 & 12.14 & 35.47 \\
+E: full pipeline (with mask)        & 55.66 & 7.522 & 23421 & --    & 30.73 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{clahe_histogram.jpg}
+\caption{Lightness channel and its histogram: original, global histogram equalisation, and CLAHE.}
+\label{fig:clahe}
+\end{figure}
+
+Global equalisation gives the highest contrast and entropy numbers, but Figure~\ref{fig:clahe} shows what those numbers hide: the smooth background becomes blotchy, and the histogram has gaps because grey levels were merged. CLAHE raises contrast by 19\% over the raw image and keeps a continuous histogram. Version D has the best BRISQUE score (12.14 against 18.74 for the raw image) and the highest sharpness. Against the raw image, the full pipeline raises RMS contrast by 29\% and entropy by 0.48~bits (Figure~\ref{fig:quality}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{baseline_visual.jpg}
+\caption{The five versions for one image of each class.}
+\label{fig:basevis}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{quality_before_after.png}
+\caption{Quality metrics for each class before (resize only) and after (full pipeline).}
+\label{fig:quality}
+\end{figure}
+
+\subsection{Background mask}
+The mask was applied to 482 of 590 images (81.7\%). Of the others, 84 had no green background (less than 2\% green pixels) and 24 had almost no pixels near a dominant leaf colour. Where the mask was applied, it kept 63.7\% of the pixels on average (Figure~\ref{fig:fg}). The Otsu threshold on the chroma distance had a median of 9; the lower limit of 8 was used for 177 of 506 images and the upper limit of 25 for 6.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.66\textwidth]{foreground_fraction.png}
+\caption{Share of each image that the mask kept, for each class.}
+\label{fig:fg}
+\end{figure}
+
+\subsection{Classifier}
+Table~\ref{tab:svm} gives the SVM result. The chance level for six classes is 16.7\%.
+
+\begin{table}[H]
+\centering
+\caption{SVM accuracy and macro F1 (mean $\pm$ standard deviation over three repeats of 5-fold cross-validation).}
+\label{tab:svm}
+\small
+\begin{tabular}{lcc}
+\toprule
+Version & Accuracy (\%) & Macro F1 \\
+\midrule
+A: resize only                      & $45.03 \pm 0.68$ & $0.450 \pm 0.006$ \\
+C: CLAHE only                       & $44.18 \pm 1.44$ & $0.443 \pm 0.014$ \\
+D: restoration + CLAHE + sharpening & $47.06 \pm 1.60$ & $0.471 \pm 0.016$ \\
+E: full pipeline (with mask)        & $46.44 \pm 0.50$ & $0.465 \pm 0.005$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{confusion_matrices.png}
+\caption{Confusion matrices for the raw images (A) and the full pipeline (E), first repeat.}
+\label{fig:cm}
+\end{figure}
+
+The full pipeline is 1.4 percentage points above the raw images, and version D is 2.0 points above. The gain is about two standard deviations for E, so it is probably real, but it is small. In the per-class F1 scores of the first repeat, the pipeline improved five of the six classes (green aphid 0.459 to 0.476, mealybug 0.355 to 0.378, red mite 0.587 to 0.622, whitefly 0.463 to 0.487, yellow aphid 0.409 to 0.447) and made black aphid worse (0.448 to 0.424).
+
+% ==============================================================================
+\section{Discussion}
+
+\subsection{Interpretation}
+\paragraph{Where the storage reduction comes from.} Resizing and JPEG compression alone give 23.5~MB (version A), which is a 95.8\% reduction. The full pipeline gives 30.7~MB. Enhancement adds high-frequency detail that JPEG cannot remove, so versions C and D are larger (31.5 and 35.5~MB). The mask recovers part of that cost: it reduces the size by 13\% (35.5 to 30.7~MB), because a constant black region costs almost no bits. The storage objective is therefore met by normalisation; enhancement and masking are for the classifier, not for storage.
+
+\paragraph{Quality-guided restoration works, with one reservation.} The stage reproduces the result of the reference paper on the BRISQUE score. The reservation is that a filter selected for the lowest BRISQUE must show a lower BRISQUE; the score is not independent evidence. The paper has the same construction. The controlled degradation test is the independent evidence: the selection found the correct type of filter in 177 of 180 cases and raised PSNR and SSIM in all three degradations. It also showed a weakness of BRISQUE as a selector: it rewards a sharp-looking result, so it prefers the Wiener filter to Richardson--Lucy and the median filter to the Gaussian filter, even where the other filter is closer to the true image.
+
+\paragraph{The dataset decides which filter is useful.} On the real images, the median and Gaussian filters were selected twice in 128 cases and made the mean score worse. On the degraded images, they were the correct choice for every noisy image. A fixed denoising step, applied to all images, would have damaged this dataset: an early version of the pipeline did this and the mean BRISQUE rose from 19.5 to 35.8. This is direct support for the claim of the paper that preprocessing must follow a diagnosis of each image.
+
+\paragraph{Enhancement and the classifier.} Contrast, entropy and sharpness all rose, and the classifier gained 1.4 to 2.0 points. The effect on the classifier is much smaller than the effect on the image metrics. Two reasons are likely. The features are global histograms of colour and texture, which do not use the location or shape of the pest. In addition, each species in this dataset lives on typical host plants, so the background carries class information; masking removes that shortcut, which is correct for a model that must work on other crops, but it does not raise accuracy inside this dataset.
+
+\subsection{Comparison with the reference paper}
+\begin{table}[H]
+\centering
+\caption{Reference paper and this work.}
+\small
+\begin{tabular}{p{3.3cm}p{5.6cm}p{5.6cm}}
+\toprule
+ & Jia et al.\ \cite{jia2025} & This work \\
+\midrule
+Dataset & 4 pest classes from IP102 \cite{wu2019} & 6 pest classes, 590 images \\
+Quality metric & BRISQUE, PIQE, NIQE (MATLAB) & BRISQUE (OpenCV) \\
+Images restored & 12 with BRISQUE $> 30$ & 128 with BRISQUE $> 30$ \\
+Filters & Wiener, Lucy--Richardson, sharpening, damped least squares, Tikhonov, total variation & Wiener, Richardson--Lucy, sharpening, total variation, median, Gaussian \\
+Filter selection & By hand for each image & Automatic, lowest BRISQUE \\
+Mean BRISQUE & 40.75 $\rightarrow$ 16.17 & 39.11 $\rightarrow$ 15.88 \\
+Validation with a reference & None & PSNR and SSIM on controlled degradations \\
+Later stages & Clustering segmentation, edge detection, YOLOv5 detector & Colour mask, CLAHE, resize, JPEG, SVM classifier \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The damped least squares and Tikhonov filters of the paper were not implemented; both are regularised inverse filters of the same family as the Wiener filter. PIQE and NIQE are not in OpenCV and were not implemented. The paper does not give its filter parameters, so the parameters here are our own.
+
+\subsection{Failure cases and limitations}
+Figure~\ref{fig:fail} shows the extreme cases of the mask.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.74\textwidth]{mask_extreme_cases.jpg}
+\caption{Extreme cases of the mask: the images with the most and the least background removed, and images where the mask was not applied.}
+\label{fig:fail}
+\end{figure}
+
+\begin{itemize}[nosep]
+\item \textbf{Green pest on a green plant.} A colour mask cannot separate a green aphid from the stem or leaf under it. In the third row of Figure~\ref{fig:fail} the aphid has the dominant green colour, so the mask removes the aphid and keeps the surroundings. Green aphid is also the class with the lowest share of masked images (64\%). Shape or texture information is necessary for this class.
+\item \textbf{Background that is not green.} Soil, bark, sky, fingers and dry leaves are not removed, because the mask only models green.
+\item \textbf{Assumed PSF.} The deblurring filters assume a Gaussian PSF with a fixed width. Motion blur or a different amount of defocus is not modelled, which limits the gain for blur (0.46~dB).
+\item \textbf{Fixed threshold.} The BRISQUE threshold of 30 is taken from the paper and was not tuned. The BRISQUE model was trained on general photographs, not on macro images of insects.
+\item \textbf{Time.} A flagged image takes about nine times longer than a good image. The paper names this cost as a limitation, and automatic selection does not remove it.
+\item \textbf{Stand-in dataset.} The photographs are mostly of good quality and are taken by people who wanted a clear image of the insect. A dataset from a fixed field camera will have more noise and blur, more flagged images and a longer mean time.
+\item \textbf{Classifier.} An SVM on global histograms is a weak model. The result shows the direction of the effect, not the accuracy that a convolutional network can reach.
+\end{itemize}
+
+% ==============================================================================
+\section{Conclusion}
+
+\subsection{Findings}
+\begin{itemize}[nosep]
+\item The pipeline reduced 590 images from 566.2~MB to 30.7~MB (94.6\%) at a mean of 121~ms for each image, and wrote $512\times512$ images sorted into six class folders.
+\item Automatic, BRISQUE-guided filter selection reduced the mean score of the low-quality images from 39.1 to 15.9, comparable to the hand-tuned result of the reference paper (40.75 to 16.17).
+\item With a known clean image, the selected filter raised PSNR by 0.5 to 15.9~dB and was of the correct type in 98\% of cases.
+\item CLAHE and sharpening raised RMS contrast by 29\% and entropy by 0.48~bits, without the artefacts of global equalisation.
+\item The mask based on the dominant leaf colour isolated pale and small pests that a plain green threshold removes.
+\item The classifier gained 1.4 percentage points, a small effect.
+\end{itemize}
+
+\subsection{Objective achievement}
+Objectives 1 to 5 were achieved. Objective 6 was achieved in the sense that the test was done; its answer is that the benefit to this simple classifier is small. The storage objective is met by resizing and compression, and the enhancement stages add size.
+
+\subsection{Future improvements}
+\begin{itemize}[nosep]
+\item Estimate the blur width for each image, and add a motion-blur PSF, so that deconvolution matches the real degradation.
+\item Replace the try-all-filters step with a direct mapping from BRISQUE features to a filter. This removes most of the time cost and is the direction that the paper proposes.
+\item Add PIQE and NIQE and select with a combination of scores, to reduce the bias of BRISQUE towards sharp-looking results.
+\item Add shape and texture cues, or GrabCut started from the colour mask, to keep green pests.
+\item Crop to the bounding box of the foreground before the final resize, so that a small pest uses more of the $512\times512$ output.
+\item Evaluate with a convolutional network and with the course dataset.
+\end{itemize}
+
+% ==============================================================================
+\begin{thebibliography}{99}
+\small
+\bibitem{jia2025} S. Jia, M. Horri Rezaei and B. Honarvar Shakibaei Asli, ``Enhancing pest detection in deep learning through a systematic image quality assessment and preprocessing framework,'' \textit{Journal of Experimental and Theoretical Analyses}, vol.~3, no.~4, art.~39, 2025. doi:10.3390/jeta3040039.
+\bibitem{mittal2012} A. Mittal, A. K. Moorthy and A. C. Bovik, ``No-reference image quality assessment in the spatial domain,'' \textit{IEEE Transactions on Image Processing}, vol.~21, no.~12, pp.~4695--4708, 2012.
+\bibitem{otsu1979} N. Otsu, ``A threshold selection method from gray-level histograms,'' \textit{IEEE Transactions on Systems, Man, and Cybernetics}, vol.~9, no.~1, pp.~62--66, 1979.
+\bibitem{zuiderveld1994} K. Zuiderveld, ``Contrast limited adaptive histogram equalization,'' in \textit{Graphics Gems IV}, Academic Press, 1994, pp.~474--485.
+\bibitem{richardson1972} W. H. Richardson, ``Bayesian-based iterative method of image restoration,'' \textit{Journal of the Optical Society of America}, vol.~62, no.~1, pp.~55--59, 1972.
+\bibitem{lucy1974} L. B. Lucy, ``An iterative technique for the rectification of observed distributions,'' \textit{The Astronomical Journal}, vol.~79, pp.~745--754, 1974.
+\bibitem{rudin1992} L. I. Rudin, S. Osher and E. Fatemi, ``Nonlinear total variation based noise removal algorithms,'' \textit{Physica D}, vol.~60, pp.~259--268, 1992.
+\bibitem{chambolle2004} A. Chambolle, ``An algorithm for total variation minimization and applications,'' \textit{Journal of Mathematical Imaging and Vision}, vol.~20, pp.~89--97, 2004.
+\bibitem{wang2004} Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, ``Image quality assessment: from error visibility to structural similarity,'' \textit{IEEE Transactions on Image Processing}, vol.~13, no.~4, pp.~600--612, 2004.
+\bibitem{gonzalez2018} R. C. Gonzalez and R. E. Woods, \textit{Digital Image Processing}, 4th ed. Pearson, 2018.
+\bibitem{ojala2002} T. Ojala, M. Pietik\"ainen and T. M\"aenp\"a\"a, ``Multiresolution gray-scale and rotation invariant texture classification with local binary patterns,'' \textit{IEEE Transactions on Pattern Analysis and Machine Intelligence}, vol.~24, no.~7, pp.~971--987, 2002.
+\bibitem{cortes1995} C. Cortes and V. Vapnik, ``Support-vector networks,'' \textit{Machine Learning}, vol.~20, pp.~273--297, 1995.
+\bibitem{wu2019} X. Wu, C. Zhan, Y.-K. Lai, M.-M. Cheng and J. Yang, ``IP102: a large-scale benchmark dataset for insect pest recognition,'' in \textit{Proc.\ IEEE/CVF Conference on Computer Vision and Pattern Recognition}, 2019, pp.~8787--8796.
+\bibitem{inaturalist} iNaturalist, ``iNaturalist: research-grade observations.'' \url{https://www.inaturalist.org}.
+\bibitem{opencv} G. Bradski, ``The OpenCV library,'' \textit{Dr.\ Dobb's Journal of Software Tools}, 2000.
+\bibitem{scikit-image} S. van der Walt \textit{et al.}, ``scikit-image: image processing in Python,'' \textit{PeerJ}, vol.~2, e453, 2014.
+\bibitem{scikit-learn} F. Pedregosa \textit{et al.}, ``Scikit-learn: machine learning in Python,'' \textit{Journal of Machine Learning Research}, vol.~12, pp.~2825--2830, 2011.
+\end{thebibliography}
+
+% ==============================================================================
+\appendix
+\section{Instructions for execution}
+
+\subsection{Setup}
+Python 3.11 or later is necessary.
+\begin{lstlisting}[language=bash,numbers=none]
+git clone https://github.com/shrayash25/dip-pest-preprocessing
+cd dip-pest-preprocessing
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+\end{lstlisting}
+
+\subsection{Run}
+\begin{lstlisting}[language=bash,numbers=none]
+python run_all.py
+\end{lstlisting}
+This command needs no manual input. It does four steps:
+\begin{enumerate}[nosep]
+\item Downloads the dataset into \texttt{data/raw/<class>/} (skipped if the images are there). An internet connection is necessary for this step only.
+\item Runs the pipeline. Processed images go to \texttt{data/processed/<class>/}; tables and figures go to \texttt{results/}.
+\item Runs the controlled degradation test.
+\item Runs the classifier comparison.
+\end{enumerate}
+A full run takes about four minutes after the download. To use a different dataset, put the images in \texttt{data/raw/<class name>/}, one folder for each class, before the command is run.
+
+\subsection{Inputs and dependencies}
+\begin{itemize}[nosep]
+\item \textbf{Images:} listed in \texttt{data/raw/ATTRIBUTION.csv} with the photographer, licence and source page of each image.
+\item \textbf{BRISQUE model files:} \texttt{brisque\_model\_live.yml} and \texttt{brisque\_range\_live.yml} in the \texttt{models} folder, from the OpenCV contrib project.
+\item \textbf{Libraries:} opencv-contrib-python-headless 5.1.0.95, numpy 2.5.5, matplotlib 3.11.2, scikit-image 0.26.0, scikit-learn 1.9.1.
+\end{itemize}
+
+\section{Complete scripts}
+\subsection{run\_all.py}
+\lstinputlisting{../run_all.py}
+\subsection{pest\_pipeline.py}
+\lstinputlisting{../pest_pipeline.py}
+\subsection{degradation\_experiment.py}
+\lstinputlisting{../degradation_experiment.py}
+\subsection{classify\_eval.py}
+\lstinputlisting{../classify_eval.py}
+\subsection{figures.py}
+\lstinputlisting{../figures.py}
+\subsection{download\_dataset.py}
+\lstinputlisting{../download_dataset.py}
+
+\end{document}
