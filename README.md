@@ -93,3 +93,13 @@ permit commercial use.
 ## Report
 
 The project report is in `report/report.pdf`. The LaTeX source is in `report/` (compile with `tectonic report.tex`).
+
+## Run the pipeline on your own images
+
+Put images in the folder `run-all-once/` and run:
+
+```
+python run_all_once.py
+```
+
+The script processes each image in the folder (subfolders also) and writes to `run-all-once/output/`: the final 512 x 512 images, one step plot for each image, `results.csv` and `summary.txt`. Class folders and the dataset download are not necessary. Use `--input <folder>` for a different folder.
