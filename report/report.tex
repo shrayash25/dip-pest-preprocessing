@@ -1,13 +1,47 @@
-\documentclass[11pt,a4paper]{article}
-\usepackage[margin=2.4cm]{geometry}
-\usepackage{graphicx,booktabs,amsmath,amssymb,float,caption,xcolor,listings,enumitem,array}
+\documentclass[12pt,a4paper]{article}
+\usepackage[margin=2.5cm,headheight=15pt]{geometry}
+\usepackage{newtxtext,newtxmath}
+\usepackage{graphicx,booktabs,amsmath,float,caption,xcolor,listings,enumitem,array}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+\usepackage{setspace,titlesec,fancyhdr,tocloft}
 \usepackage[hidelinks]{hyperref}
 \graphicspath{{figs/}}
-\captionsetup{font=small,labelfont=bf}
-\setlength{\parskip}{0.45em}
+\captionsetup{font={small,it},labelfont={bf,it},labelsep=period}
+\captionsetup[table]{position=top}
+\setlength{\parskip}{0.6em}
 \setlength{\parindent}{0pt}
+\onehalfspacing
+\emergencystretch=3em
+
+% ---- format: "Section N - Title" headings, running title, centred page number
+\newcommand{\shorttitle}{Image Preprocessing Pipeline for Plant Pest Detection}
+\newcommand{\secword}{Section}
+\titleformat{\section}{\Large\bfseries}{\secword\ \thesection\ -}{0.35em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.5em}{}
+\let\oldsection\section
+\renewcommand{\section}{\clearpage\oldsection}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[R]{\small\itshape\shorttitle}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\cfttoctitlefont}{\Large\bfseries}
+\renewcommand{\cftloftitlefont}{\Large\bfseries}
+\renewcommand{\cftlottitlefont}{\Large\bfseries}
+\renewcommand{\cftsecpresnum}{Section }
+\renewcommand{\cftsecaftersnum}{ -}
+\setlength{\cftsecnumwidth}{5.6em}
+\setlength{\cftsubsecindent}{1.5em}
+\renewcommand{\cftfigpresnum}{Figure }
+\renewcommand{\cftfigaftersnum}{.}
+\setlength{\cftfignumwidth}{5em}
+\setlength{\cftfigindent}{0pt}
+\renewcommand{\cfttabpresnum}{Table }
+\renewcommand{\cfttabaftersnum}{.}
+\setlength{\cfttabnumwidth}{5em}
+\setlength{\cfttabindent}{0pt}
+\newcommand{\frontsection}[1]{\clearpage\oldsection*{#1}\addcontentsline{toc}{subsection}{#1}}
 
 \lstset{
   language=Python, basicstyle=\ttfamily\scriptsize, breaklines=true, columns=fullflexible,
@@ -16,37 +50,74 @@
   showstringspaces=false, tabsize=4
 }
 
-% ---- cover details: fill in the three placeholders ---------------------------
-\newcommand{\courseline}{EEE F435 \quad Digital Image Processing}
-\newcommand{\authorone}{Shrayash Barnwal \quad 2023A3PS0361P}
-\newcommand{\authortwo}{Akshal Gondalia \quad 2023B1A80856P}
+\newcommand{\reporttitle}{Optimized Image Preprocessing and Feature Enhancement Pipeline for Plant Pest Detection}
 \newcommand{\repourl}{https://github.com/shrayash25/dip-pest-preprocessing}
 
 \begin{document}
 
 \begin{titlepage}
 \centering
-\vspace*{3.2cm}
-{\large \courseline\par}
-\vspace{0.4cm}
-{\large Project Report\par}
-\vspace{1.6cm}
-{\LARGE\bfseries Optimized Image Preprocessing and Feature Enhancement Pipeline for Plant Pest Detection\par}
-\vspace{2.2cm}
-{\large \authorone\par}
-\vspace{0.3cm}
-{\large \authortwo\par}
-\vfill
-{\small Reference paper: S. Jia, M. Horri Rezaei and B. Honarvar Shakibaei Asli, ``Enhancing Pest Detection in Deep Learning Through a Systematic Image Quality Assessment and Preprocessing Framework,'' \textit{J. Exp. Theor. Anal.}, vol.~3, no.~4, art.~39, 2025.\par}
-\vspace{1.5cm}
+\vspace*{0.3cm}
+{\large A REPORT\par}
+\vspace{0.5cm}
+{\large ON\par}
+\vspace{1.0cm}
+{\LARGE\bfseries \reporttitle\par}
+\vspace{1.0cm}
+{\large BY\par}
+\vspace{0.5cm}
+{\large\bfseries Shrayash Barnwal\par 2023A3PS0361P\par}
+\vspace{0.5cm}
+{\large\bfseries Akshal Gondalia\par 2023B1A80856P\par}
+\vspace{0.9cm}
+{\normalsize Prepared for the course\par}
+{\large\bfseries EEE F435 Digital Image Processing\par}
+\vspace{1.0cm}
+\includegraphics[width=3.0cm]{bits_logo}\par
+\vspace{0.7cm}
+{\large BIRLA INSTITUTE OF TECHNOLOGY AND SCIENCE, PILANI\par}
+{\normalsize Semester I, Academic Year 2026-2027\par}
+{\normalsize November 2026\par}
 \end{titlepage}
+\setcounter{page}{2}
 
-\begin{abstract}
-\noindent Raw field images of plant pests are large, differ in quality, and contain leaf background that is not useful to a classifier. This report describes a reproducible batch pipeline in Python and OpenCV for six pest classes: green aphid, yellow aphid, black aphid, whitefly, red mite and mealybug. The pipeline follows the central idea of the reference paper: measure image quality first, then select the restoration from the measurement. Each image is scored with the BRISQUE no-reference metric. A low-quality image is processed by six candidate filters (median, Gaussian, Wiener, Richardson--Lucy, total variation, unsharp masking) and the best result is kept; the paper made this selection by hand, and here it is automatic. The pipeline then masks the green leaf background (HSV range and Otsu threshold on the LAB chroma distance), applies CLAHE and sharpening, resizes with aspect-ratio padding to $512\times512$ and compresses to JPEG. On 590 images the dataset size fell from 566.2~MB to 30.7~MB (94.6\%) at a mean of 121~ms for each image. For the 128 low-quality images the mean BRISQUE score fell from 39.1 to 15.9, close to the 40.75 to 16.17 that the paper reports. A controlled test with known clean images showed that the BRISQUE-selected filter raised PSNR by 0.5~dB for blur, 5.1~dB for Gaussian noise and 15.9~dB for salt-and-pepper noise. An SVM classifier gained 1.4 percentage points (45.0\% to 46.4\%), which is a small effect. The main limitations are that almost all the storage gain comes from resizing and compression, and that a colour mask cannot separate a green pest from a green leaf.
-\end{abstract}
+\frontsection{Declaration}
+We hereby declare that the work presented in this report entitled ``\reporttitle'' is an original piece of academic work carried out by us as the project of the course EEE F435 Digital Image Processing at the Birla Institute of Technology and Science, Pilani. The report has been prepared in fulfilment of the requirements of the course project for the academic year 2026-2027. All sources of information and references have been duly acknowledged.
 
+We further declare that this report, in whole or in part, has not been submitted to any other institution or university for the award of any degree or diploma.
+
+\vspace{1.5cm}
+\begin{minipage}[t]{0.48\textwidth}
+Shrayash Barnwal\\
+2023A3PS0361P\\
+BITS Pilani
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\textwidth}
+Akshal Gondalia\\
+2023B1A80856P\\
+BITS Pilani
+\end{minipage}
+
+\vspace{0.8cm}
+Date: 22nd November 2026
+
+\frontsection{Acknowledgements}
+We would like to express our sincere gratitude to the instructor and the teaching team of the course EEE F435 Digital Image Processing, BITS Pilani, for the project brief and for their guidance during the course. We thank S. Jia, M. Horri Rezaei and B. Honarvar Shakibaei Asli, whose paper is the reference for this project. We also thank the photographers who share their observations on iNaturalist under Creative Commons licences; their images are the dataset of this work, and each one is credited in the attribution file of the repository. Finally, we acknowledge the developers of the open-source libraries OpenCV, NumPy, scikit-image, scikit-learn and Matplotlib.
+
+\frontsection{Abstract}
+Raw field images of plant pests are large, differ in quality, and contain leaf background that is not useful to a classifier. This report describes a reproducible batch pipeline in Python and OpenCV for six pest classes: green aphid, yellow aphid, black aphid, whitefly, red mite and mealybug. The pipeline follows the central idea of the reference paper: measure image quality first, then select the restoration from the measurement. Each image is scored with the BRISQUE no-reference metric. A low-quality image is processed by six candidate filters (median, Gaussian, Wiener, Richardson--Lucy, total variation, unsharp masking) and the best result is kept; the paper made this selection by hand, and here it is automatic. The pipeline then masks the green leaf background (HSV range and Otsu threshold on the LAB chroma distance), applies CLAHE and sharpening, resizes with aspect-ratio padding to $512\times512$ and compresses to JPEG. On 590 images the dataset size fell from 566.2~MB to 30.7~MB (94.6\%) at a mean of 121~ms for each image. For the 128 low-quality images the mean BRISQUE score fell from 39.1 to 15.9, close to the 40.75 to 16.17 that the paper reports. A controlled test with known clean images showed that the BRISQUE-selected filter raised PSNR by 0.5~dB for blur, 5.1~dB for Gaussian noise and 15.9~dB for salt-and-pepper noise. An SVM classifier gained 1.4 percentage points (45.0\% to 46.4\%), which is a small effect. The main limitations are that almost all the storage gain comes from resizing and compression, and that a colour mask cannot separate a green pest from a green leaf.
+
+\vspace{0.6em}
+\textbf{Keywords:} image preprocessing, plant pest detection, BRISQUE, image restoration, background masking, Otsu threshold, CLAHE, image compression
+
+\clearpage
+\begin{singlespace}
 \tableofcontents
-\newpage
+\clearpage
+\listoffigures
+\vspace{1cm}
+\listoftables
+\end{singlespace}
 
 % ==============================================================================
 \section{Introduction}
@@ -484,6 +555,8 @@ Objectives 1 to 5 were achieved. Objective 6 was achieved in the sense that the 
 \end{itemize}
 
 % ==============================================================================
+\clearpage\renewcommand{\refname}{References}\addcontentsline{toc}{section}{References}
+\makeatletter\renewcommand{\@biblabel}[1]{#1.}\makeatother
 \begin{thebibliography}{99}
 \small
 \bibitem{jia2025} S. Jia, M. Horri Rezaei and B. Honarvar Shakibaei Asli, ``Enhancing pest detection in deep learning through a systematic image quality assessment and preprocessing framework,'' \textit{Journal of Experimental and Theoretical Analyses}, vol.~3, no.~4, art.~39, 2025. doi:10.3390/jeta3040039.
@@ -507,6 +580,8 @@ Objectives 1 to 5 were achieved. Objective 6 was achieved in the sense that the 
 
 % ==============================================================================
 \appendix
+\renewcommand{\secword}{Appendix}
+\addtocontents{toc}{\protect\renewcommand{\protect\cftsecpresnum}{Appendix }\protect\setlength{\protect\cftsecnumwidth}{6.4em}}
 \section{Instructions for execution}
 
 \subsection{Setup}
@@ -532,6 +607,12 @@ This command needs no manual input. It does four steps:
 \end{enumerate}
 A full run takes about four minutes after the download. To use a different dataset, put the images in \texttt{data/raw/<class name>/}, one folder for each class, before the command is run.
 
+\subsection{Run on one folder of images}
+\begin{lstlisting}[language=bash,numbers=none]
+python run_all_once.py
+\end{lstlisting}
+This command runs all stages of the pipeline on each image in the folder \texttt{run-all-once} and writes the final images, one step plot for each image, \texttt{results.csv} and \texttt{summary.txt} to the folder \texttt{output} inside it. Class folders and the dataset download are not necessary.
+
 \subsection{Inputs and dependencies}
 \begin{itemize}[nosep]
 \item \textbf{Images:} listed in \texttt{data/raw/ATTRIBUTION.csv} with the photographer, licence and source page of each image.
@@ -540,6 +621,7 @@ A full run takes about four minutes after the download. To use a different datas
 \end{itemize}
 
 \section{Complete scripts}
+\begin{singlespace}
 \subsection{run\_all.py}
 \lstinputlisting{../run_all.py}
 \subsection{pest\_pipeline.py}
@@ -552,5 +634,8 @@ A full run takes about four minutes after the download. To use a different datas
 \lstinputlisting{../figures.py}
 \subsection{download\_dataset.py}
 \lstinputlisting{../download_dataset.py}
+\subsection{run\_all\_once.py}
+\lstinputlisting{../run_all_once.py}
+\end{singlespace}
 
 \end{document}
