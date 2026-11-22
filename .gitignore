@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+docs-local/
+
+# Images are not stored in the repository. download_dataset.py recreates them.
+data/raw/*
+!data/raw/ATTRIBUTION.csv
+data/processed/
+
+# Course document
+Project Titles.pdf

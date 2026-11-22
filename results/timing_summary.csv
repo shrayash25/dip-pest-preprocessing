@@ -1,0 +1,9 @@
+stage,mean_ms,std_ms
+load,8.971,4.263
+work_resize,1.094,1.064
+denoise,2.026,0.329
+mask,9.26,3.649
+enhance,1.624,0.306
+final_resize,0.28,0.325
+save,1.313,0.215
+TOTAL,24.568,5.606

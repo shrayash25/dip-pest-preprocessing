@@ -1,0 +1,6 @@
+variant,mean_contrast,mean_entropy,mean_sharpness,mean_brightness,total_MB
+A_resize_only,43.12,7.041,4831.9,119.33,23.505
+B_global_HE,70.7,7.868,15325.6,120.81,32.311
+C_CLAHE_only,51.46,7.46,12861.5,118.72,31.536
+D_enhanced_no_mask,51.9,7.466,9207.9,118.87,29.697
+E_full_pipeline,55.06,7.497,9433.8,120.86,26.999

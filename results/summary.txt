@@ -1,0 +1,31 @@
+Images processed: 590   skipped (not readable): 0
+Output size: 512x512, JPEG quality 85
+
+Storage (MB)
+class          images       raw  processed  reduction   ratio   ms/img  mask %
+black_aphid       100     84.64       4.43     94.76%    19.1     24.1    88.0
+green_aphid        90     98.42       3.45     96.49%    28.5     24.6    64.4
+mealybug          100     82.18       4.28     94.79%    19.2     23.0    73.0
+red_mite          100    113.40       5.75     94.93%    19.7     25.3    86.0
+whitefly          100     95.99       4.47     95.34%    21.4     26.2    84.0
+yellow_aphid      100     91.61       4.60     94.98%    19.9     24.1    92.0
+TOTAL             590    566.23      27.00     95.23%    21.0     24.6    81.5
+
+Mean time for each stage (ms per image)
+  load               8.97  (std 4.26)
+  work_resize        1.09  (std 1.06)
+  denoise            2.03  (std 0.33)
+  mask               9.26  (std 3.65)
+  enhance            1.62  (std 0.31)
+  final_resize       0.28  (std 0.33)
+  save               1.31  (std 0.21)
+  TOTAL             24.57  (std 5.61)
+  Wall time for the full batch, including the baseline measurements: 26.4 s
+
+Baseline comparison (mean over all images)
+variant                 contrast  entropy  sharpness  brightness  total MB
+A_resize_only              43.12    7.041     4831.9      119.33     23.50
+B_global_HE                70.70    7.868    15325.6      120.81     32.31
+C_CLAHE_only               51.46    7.460    12861.5      118.72     31.54
+D_enhanced_no_mask         51.90    7.466     9207.9      118.87     29.70
+E_full_pipeline            55.06    7.497     9433.8      120.86     27.00

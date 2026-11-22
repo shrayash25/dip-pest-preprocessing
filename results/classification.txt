@@ -1,0 +1,15 @@
+SVM (RBF, C=10), 5-fold stratified cross-validation, 3 repeats, 590 images, 6 classes, chance level 16.7%
+variant                         accuracy          macro F1
+A_resize_only              45.03 +/- 0.68      0.450 +/- 0.006
+C_CLAHE_only               44.18 +/- 1.44      0.443 +/- 0.014
+D_enhanced_no_mask         44.86 +/- 0.68      0.449 +/- 0.008
+E_full_pipeline            45.93 +/- 1.21      0.459 +/- 0.013
+
+Per-class F1 (repeat 0)
+class                A       C       D       E
+black_aphid      0.448   0.488   0.441   0.437
+green_aphid      0.459   0.450   0.429   0.482
+mealybug         0.355   0.308   0.349   0.374
+red_mite         0.587   0.610   0.638   0.600
+whitefly         0.463   0.479   0.476   0.480
+yellow_aphid     0.409   0.410   0.406   0.433
