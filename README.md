@@ -103,3 +103,11 @@ python run_all_once.py
 ```
 
 The script processes each image in the folder (subfolders also) and writes to `run-all-once/output/`: the final 512 x 512 images, one step plot for each image, `results.csv` and `summary.txt`. Class folders and the dataset download are not necessary. Use `--input <folder>` for a different folder.
+
+## Web page (one image at a time)
+
+```
+python web_app.py
+```
+
+Then open http://127.0.0.1:8000 in a browser and select an image. The page shows the original and the processed image side by side, the mask, the enhanced image, and the results (size, time for each stage, BRISQUE, selected filter, mask data). The server uses only the Python standard library, listens on this computer only, and saves nothing.
